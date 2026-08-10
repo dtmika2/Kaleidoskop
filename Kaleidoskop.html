@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Kaleidoscope Pattern Match Demo</title>
+<style>
+  :root {
+    --bg: #12141a;
+    --panel: #1b1e27;
+    --accent: #ff8a3d;
+    --text: #eceef2;
+    --muted: #8b90a0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 28px 16px 60px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; text-align: center; max-width: 420px; }
+
+  .stage-wrap {
+    position: relative;
+    width: 420px;
+    height: 420px;
+  }
+  .stage {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    cursor: crosshair;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 20px 60px rgba(0,0,0,0.5);
+    touch-action: none;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .glow-ring {
+    position: absolute;
+    inset: -6px;
+    border-radius: 50%;
+    pointer-events: none;
+    border: 3px solid var(--ring-color, var(--accent));
+    box-shadow: 0 0 24px 4px var(--ring-glow, rgba(255,138,61,0.55));
+    opacity: 0;
+    transition: opacity 0.15s linear, border-color 0.2s linear, box-shadow 0.2s linear;
+  }
+
+  .target-box {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 18px;
+    margin-bottom: 22px;
+    flex-wrap: wrap;
+  }
+  .target-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .target-item .label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .target-item .sub {
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .target-thumb {
+    width: 72px;
+    height: 72px;
+    border-radius: 50%;
+    overflow: hidden;
+    box-shadow: 0 0 0 2px var(--item-color, var(--accent)), 0 0 14px var(--item-glow, rgba(255,138,61,0.35));
+    transition: box-shadow 0.2s linear, filter 0.2s linear;
+  }
+  .target-thumb canvas { display: block; width: 100%; height: 100%; }
+  .target-item.found .target-thumb {
+    filter: saturate(1.3);
+    box-shadow: 0 0 0 3px var(--item-color, var(--accent)), 0 0 20px var(--item-glow, rgba(255,138,61,0.6));
+  }
+
+  .hud {
+    margin-top: 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .meter {
+    width: 220px;
+    height: 8px;
+    border-radius: 4px;
+    background: #2a2e3a;
+    overflow: hidden;
+  }
+  .meter-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #4a4f5e, var(--ring-color, var(--accent)));
+    transition: width 0.12s linear, background 0.2s linear;
+  }
+  .meter-label { font-size: 12px; color: var(--muted); min-width: 70px; }
+
+  .word-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 5;
+    gap: 2px;
+  }
+  .word-overlay .letter {
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--ring-color, var(--accent));
+    text-shadow: 0 0 14px var(--ring-glow, rgba(255,138,61,0.9)), 0 0 4px rgba(0,0,0,0.9);
+    opacity: 0;
+    transform: scale(0.7);
+    transition: opacity 0.4s ease, transform 0.4s ease, color 0.2s linear;
+  }
+  .word-overlay .letter.lit {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  .controls {
+    margin-top: 16px;
+    display: flex;
+    gap: 10px;
+  }
+  button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid #333749;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .ref-box {
+    margin-top: 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+  .ref-box span { font-size: 12px; color: var(--muted); }
+  .ref-frame {
+    position: relative;
+    width: 220px;
+    height: 220px;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.08), 0 10px 30px rgba(0,0,0,0.5);
+  }
+  .ref-frame canvas { display: block; width: 100%; height: 100%; }
+  .ref-marker {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    margin-left: -7px;
+    margin-top: -7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.6), 0 0 10px rgba(255,138,61,0.9);
+    pointer-events: none;
+    transition: left 0.05s linear, top 0.05s linear;
+  }
+  button:hover { border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+  <h1>Virtual Kaleidoscope — pattern match</h1>
+  <p class="sub">Move your cursor over the circle — no clicking or dragging needed.
+    Your position maps directly onto the image, edge to edge. Four patterns are
+    hidden in it — fire, earth, water, wind — each with its own word. Get close
+    to one and its letters start unlocking on top of it.</p>
+
+  <div class="target-box" id="targetBox"><!-- 4 target-item entries injected by JS --></div>
+
+  <div class="stage-wrap">
+    <div class="stage" id="stage">
+      <canvas id="kal" width="420" height="420"></canvas>
+      <div class="word-overlay" id="wordOverlay"><!-- letters injected per active pattern --></div>
+    </div>
+    <div class="glow-ring" id="ring"></div>
+  </div>
+
+  <div class="hud">
+    <span class="meter-label">Match proximity</span>
+    <div class="meter"><div class="meter-fill" id="meterFill"></div></div>
+  </div>
+
+  <div class="controls">
+    <button id="hintBtn">Show hint direction</button>
+    <button id="resetBtn">Reset</button>
+  </div>
+
+  <div class="ref-box">
+    <span>Source image — your position is marked</span>
+    <div class="ref-frame">
+      <canvas id="refCanvas" width="220" height="220"></canvas>
+      <div class="ref-marker" id="refMarker"></div>
+    </div>
+  </div>
+
+<script>
+/* ---------- 1. Load the source texture (the uploaded artwork) ---------- */
+const SRC_SIZE = 900; // matches the embedded image's native size
+const src = document.createElement('canvas');
+src.width = src.height = SRC_SIZE;
+const sctx = src.getContext('2d');
+
+let sourceReady = false;
+const sourceImg = new Image();
+sourceImg.onload = function () {
+  sctx.drawImage(sourceImg, 0, 0, SRC_SIZE, SRC_SIZE);
+  sourceReady = true;
+  drawKaleidoscope();
+  buildLegend();
+  updateMatch();
+
+  // draw the whole, unmirrored source image once into the reference panel
+  const refCanvas = document.getElementById('refCanvas');
+  const rctx = refCanvas.getContext('2d');
+  rctx.drawImage(sourceImg, 0, 0, refCanvas.width, refCanvas.height);
+  updateRefMarker();
+};
+sourceImg.src = '4ElementalCorners.png';
+
+/* ---------- 2. Kaleidoscope renderer: N mirrored/rotated wedges around a shared pan ---------- */
+const canvas = document.getElementById('kal');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const CX = W / 2, CY = H / 2;
+const RADIUS = W / 2;
+const SLICES = 10; // matches the "many-slice" look of the original site
+
+let pan = { x: SRC_SIZE / 2, y: SRC_SIZE / 2 }; // current pan center into src texture
+
+function renderKaleidoscope(targetCanvas, panVal, sampleRadius) {
+  if (!sourceReady) return;
+  const tctx = targetCanvas.getContext('2d');
+  const tw = targetCanvas.width, th = targetCanvas.height;
+  const tcx = tw / 2, tcy = th / 2;
+  const tRadius = tw / 2;
+  // sampleRadius = how many source-image pixels the visible radius should
+  // span. Defaults to the canvas's own radius (1:1, no zoom change). Pass
+  // the main view's RADIUS here for a smaller preview canvas so it shows
+  // the same field of view, just scaled down to fit.
+  const sr = sampleRadius || tRadius;
+  const scaleFactor = tRadius / sr;
+  tctx.clearRect(0, 0, tw, th);
+  const sliceAngle = (Math.PI * 2) / SLICES;
+  const pattern = tctx.createPattern(src, 'repeat'); // tiles infinitely -> no edge/wall
+
+  for (let i = 0; i < SLICES; i++) {
+    tctx.save();
+    tctx.translate(tcx, tcy);
+    tctx.rotate(i * sliceAngle);
+    if (i % 2 === 1) tctx.scale(1, -1); // mirror every other wedge
+    tctx.scale(scaleFactor, scaleFactor); // match the main view's zoom level
+
+    tctx.beginPath();
+    tctx.moveTo(0, 0);
+    tctx.arc(0, 0, sr, -sliceAngle / 2, sliceAngle / 2);
+    tctx.closePath();
+    tctx.clip();
+
+    tctx.translate(-panVal.x, -panVal.y);
+    tctx.fillStyle = pattern;
+    tctx.fillRect(panVal.x - sr, panVal.y - sr, sr * 2, sr * 2);
+    tctx.restore();
+  }
+}
+
+function drawKaleidoscope() {
+  renderKaleidoscope(canvas, pan);
+}
+drawKaleidoscope();
+
+/* ---------- 3. Hover handling: absolute position mapping, no drag needed ---------- */
+const stage = document.getElementById('stage');
+
+// The stage element is assumed to share the source image's aspect ratio,
+// so its bounding box maps 1:1 onto the full image: hovering at the stage's
+// left edge = the image's left edge, top edge = the image's top edge, etc.
+// No relative deltas, no accumulation, no walls to hit.
+stage.addEventListener('pointermove', e => {
+  const rect = stage.getBoundingClientRect();
+  let nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
+  let ny = (e.clientY - rect.top) / rect.height;
+  nx = Math.min(1, Math.max(0, nx));
+  ny = Math.min(1, Math.max(0, ny));
+  pan.x = nx * SRC_SIZE;
+  pan.y = ny * SRC_SIZE;
+  drawKaleidoscope();
+  updateMatch();
+  updateRefMarker();
+});
+
+function updateRefMarker() {
+  const marker = document.getElementById('refMarker');
+  // pan.x / pan.y are in source-texture units (0..SRC_SIZE) -> convert to
+  // a 0..100% position on the reference panel, which shows the same image.
+  const pctX = (pan.x / SRC_SIZE) * 100;
+  const pctY = (pan.y / SRC_SIZE) * 100;
+  marker.style.left = pctX + '%';
+  marker.style.top = pctY + '%';
+}
+
+/* ---------- 4. Pattern matching: four simultaneous hidden patterns, one per "category" ---------- */
+// Each pattern lives at its own spot in the source image and unlocks its own
+// word, in its own color, as you get close to it. Only the pattern you're
+// currently closest to (and reasonably near) is "active" -- its word appears
+// in the circle, its color drives the ring/meter, and its legend thumb glows.
+const PATTERNS = [
+  { id: 'fire',  word: 'Kalamita',  color: '#ff8a3d', glow: 'rgba(255,138,61,0.55)', target: { x: 444, y: 370 } },
+  { id: 'earth', word: 'Priorita',  color: '#7cc36a', glow: 'rgba(124,195,106,0.55)', target: { x: 738, y: 481 } },
+  { id: 'water', word: 'Stabilita', color: '#4aa8f0', glow: 'rgba(74,168,240,0.55)',  target: { x: 158, y: 608 } },
+  { id: 'wind',  word: 'Autorita',  color: '#9fd0d6', glow: 'rgba(159,208,214,0.55)', target: { x: 72, y: 231 } },
+];
+const TOLERANCE = 45;        // px radius counted as "fully matched"
+const REVEAL_START = 0.90;   // proximity at which the first letters appear
+const REVEAL_FULL  = 0.98;   // proximity at which the whole word is visible
+const ACTIVE_THRESHOLD = 0.05; // below this proximity, no pattern is "active" (overlay stays empty)
+
+// Build a symmetric outside-in reveal order for any word length, e.g. for
+// length 8: [0,7,1,6,2,5,3,4] -- first/last letters together, then working in.
+function genRevealOrder(len) {
+  const order = [];
+  let lo = 0, hi = len - 1;
+  while (lo <= hi) {
+    order.push(lo);
+    if (hi !== lo) order.push(hi);
+    lo++; hi--;
+  }
+  return order;
+}
+PATTERNS.forEach(p => {
+  p.revealOrder = genRevealOrder(p.word.length);
+  p.found = false;
+});
+
+const ring = document.getElementById('ring');
+const meterFill = document.getElementById('meterFill');
+const wordOverlay = document.getElementById('wordOverlay');
+let activePatternId = null; // which pattern's letters are currently rendered in the overlay
+
+function buildLegend() {
+  const box = document.getElementById('targetBox');
+  box.innerHTML = '';
+  PATTERNS.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'target-item';
+    item.id = 'legend-' + p.id;
+    item.style.setProperty('--item-color', p.color);
+    item.style.setProperty('--item-glow', p.glow);
+
+    const thumbWrap = document.createElement('div');
+    thumbWrap.className = 'target-thumb';
+    const canvas = document.createElement('canvas');
+    canvas.width = 72; canvas.height = 72;
+    canvas.id = 'thumb-' + p.id;
+    thumbWrap.appendChild(canvas);
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.style.color = p.color;
+    label.textContent = p.id[0].toUpperCase() + p.id.slice(1);
+
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    sub.id = 'sub-' + p.id;
+    sub.textContent = 'find it';
+
+    item.appendChild(thumbWrap);
+    item.appendChild(label);
+    item.appendChild(sub);
+    box.appendChild(item);
+
+    renderKaleidoscope(canvas, p.target, RADIUS);
+  });
+}
+
+function setActivePattern(pattern) {
+  if (activePatternId === (pattern ? pattern.id : null)) return;
+  activePatternId = pattern ? pattern.id : null;
+  wordOverlay.innerHTML = '';
+  if (!pattern) return;
+  Array.from(pattern.word).forEach((ch, idx) => {
+    const span = document.createElement('span');
+    span.className = 'letter';
+    span.dataset.idx = idx;
+    span.textContent = ch;
+    wordOverlay.appendChild(span);
+  });
+}
+
+function updateWordReveal(pattern, proximity) {
+  const len = pattern.word.length;
+  let revealedCount;
+  if (proximity >= REVEAL_FULL) {
+    revealedCount = len;
+  } else if (proximity >= REVEAL_START) {
+    const t = (proximity - REVEAL_START) / (REVEAL_FULL - REVEAL_START);
+    revealedCount = Math.min(len, 2 + Math.floor(t * (len - 2)));
+  } else {
+    revealedCount = 0;
+  }
+  const litIndices = new Set(pattern.revealOrder.slice(0, revealedCount));
+  Array.from(wordOverlay.querySelectorAll('.letter')).forEach(el => {
+    const idx = Number(el.dataset.idx);
+    el.classList.toggle('lit', litIndices.has(idx));
+  });
+}
+
+function updateMatch() {
+  // Find whichever pattern the cursor is currently closest to.
+  let best = null, bestProximity = -1, bestDist = Infinity;
+  PATTERNS.forEach(p => {
+    const dist = Math.hypot(pan.x - p.target.x, pan.y - p.target.y);
+    const proximity = Math.max(0, 1 - dist / 500);
+    if (proximity > bestProximity) {
+      bestProximity = proximity;
+      bestDist = dist;
+      best = p;
+    }
+    if (dist <= TOLERANCE && !p.found) {
+      p.found = true;
+      const sub = document.getElementById('sub-' + p.id);
+      const item = document.getElementById('legend-' + p.id);
+      if (sub) sub.textContent = 'found!';
+      if (item) item.classList.add('found');
+    }
+  });
+
+  if (best && bestProximity >= ACTIVE_THRESHOLD) {
+    setActivePattern(best);
+    // Set the color vars on a shared ancestor (stage-wrap) so both the ring
+    // (a sibling of .stage) and the word-overlay letters (inside .stage)
+    // pick them up via inheritance -- setting them only on #ring left the
+    // letters stuck on the default accent color.
+    const stageWrap = document.querySelector('.stage-wrap');
+    stageWrap.style.setProperty('--ring-color', best.color);
+    stageWrap.style.setProperty('--ring-glow', best.glow);
+    meterFill.style.setProperty('--ring-color', best.color);
+    meterFill.style.width = (bestProximity * 100).toFixed(0) + '%';
+    ring.style.opacity = bestProximity > 0.15 ? (bestProximity * 0.9).toFixed(2) : 0;
+    updateWordReveal(best, bestProximity);
+  } else {
+    setActivePattern(null);
+    meterFill.style.width = '0%';
+    ring.style.opacity = 0;
+  }
+}
+updateMatch();
+
+/* ---------- 5. Optional helpers ---------- */
+document.getElementById('resetBtn').addEventListener('click', () => {
+  pan = { x: SRC_SIZE / 2, y: SRC_SIZE / 2 };
+  drawKaleidoscope();
+  updateMatch();
+  updateRefMarker();
+});
+document.getElementById('hintBtn').addEventListener('click', () => {
+  // Hint toward whichever pattern is currently nearest -- or, if none is
+  // close at all, toward the nearest not-yet-found pattern.
+  const remaining = PATTERNS.filter(p => !p.found);
+  const pool = remaining.length ? remaining : PATTERNS;
+  let nearest = pool[0], nearestDist = Infinity;
+  pool.forEach(p => {
+    const dist = Math.hypot(pan.x - p.target.x, pan.y - p.target.y);
+    if (dist < nearestDist) { nearestDist = dist; nearest = p; }
+  });
+  const dx = nearest.target.x - pan.x, dy = nearest.target.y - pan.y;
+  const dir = (Math.abs(dx) > Math.abs(dy))
+    ? (dx > 0 ? 'move left' : 'move right')
+    : (dy > 0 ? 'move up' : 'move down');
+  alert('Try to ' + dir + ' (' + nearest.id + ').');
+});
+
+</script>
+</body>
+</html>
