@@ -137,21 +137,6 @@
     transform: scale(1);
   }
 
-  .controls {
-    margin-top: 16px;
-    display: flex;
-    gap: 10px;
-  }
-  button {
-    background: var(--panel);
-    color: var(--text);
-    border: 1px solid #333749;
-    padding: 8px 14px;
-    border-radius: 8px;
-    font-size: 12px;
-    cursor: pointer;
-  }
-
   .ref-box {
     margin-top: 28px;
     display: flex;
@@ -181,7 +166,6 @@
     pointer-events: none;
     transition: left 0.05s linear, top 0.05s linear;
   }
-  button:hover { border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -205,11 +189,6 @@
   <div class="hud">
     <span class="meter-label">Match proximity</span>
     <div class="meter"><div class="meter-fill" id="meterFill"></div></div>
-  </div>
-
-  <div class="controls">
-    <button id="hintBtn">Show hint direction</button>
-    <button id="resetBtn">Reset</button>
   </div>
 
   <div class="ref-box">
@@ -471,31 +450,6 @@ function updateMatch() {
   }
 }
 updateMatch();
-
-/* ---------- 5. Optional helpers ---------- */
-document.getElementById('resetBtn').addEventListener('click', () => {
-  pan = { x: SRC_SIZE / 2, y: SRC_SIZE / 2 };
-  drawKaleidoscope();
-  updateMatch();
-  updateRefMarker();
-});
-document.getElementById('hintBtn').addEventListener('click', () => {
-  // Hint toward whichever pattern is currently nearest -- or, if none is
-  // close at all, toward the nearest not-yet-found pattern.
-  const remaining = PATTERNS.filter(p => !p.found);
-  const pool = remaining.length ? remaining : PATTERNS;
-  let nearest = pool[0], nearestDist = Infinity;
-  pool.forEach(p => {
-    const dist = Math.hypot(pan.x - p.target.x, pan.y - p.target.y);
-    if (dist < nearestDist) { nearestDist = dist; nearest = p; }
-  });
-  const dx = nearest.target.x - pan.x, dy = nearest.target.y - pan.y;
-  const dir = (Math.abs(dx) > Math.abs(dy))
-    ? (dx > 0 ? 'move left' : 'move right')
-    : (dy > 0 ? 'move up' : 'move down');
-  alert('Try to ' + dir + ' (' + nearest.id + ').');
-});
-
 </script>
 </body>
 </html>
