@@ -170,11 +170,8 @@
 </head>
 <body>
 
-  <h1>Virtual Kaleidoscope — pattern match</h1>
-  <p class="sub">Move your cursor over the circle — no clicking or dragging needed.
-    Your position maps directly onto the image, edge to edge. Four patterns are
-    hidden in it — fire, earth, water, wind — each with its own word. Get close
-    to one and its letters start unlocking on top of it.</p>
+  <h1>Elementární Kaleidoskop</h1>
+  <p class="sub">Pohybuj kurzorem po kruhu. Najdi čtyři skryté vzory - oheň, země, voda a vítr. Přibliž se k nim a začnou se odhalovat písmena jejich slov.</p>
 
   <div class="target-box" id="targetBox"><!-- 4 target-item entries injected by JS --></div>
 
@@ -187,12 +184,12 @@
   </div>
 
   <div class="hud">
-    <span class="meter-label">Match proximity</span>
+    <span class="meter-label">Blízkost k odhalení</span>
     <div class="meter"><div class="meter-fill" id="meterFill"></div></div>
   </div>
 
   <div class="ref-box">
-    <span>Source image — your position is marked</span>
+    <span>Obrazec elementů na který kaleidoskop hledí</span>
     <div class="ref-frame">
       <canvas id="refCanvas" width="220" height="220"></canvas>
       <div class="ref-marker" id="refMarker"></div>
@@ -310,10 +307,10 @@ function updateRefMarker() {
 // currently closest to (and reasonably near) is "active" -- its word appears
 // in the circle, its color drives the ring/meter, and its legend thumb glows.
 const PATTERNS = [
-  { id: 'fire',  word: 'Kalamita',  color: '#ff8a3d', glow: 'rgba(255,138,61,0.55)', target: { x: 444, y: 370 } },
-  { id: 'earth', word: 'Priorita',  color: '#7cc36a', glow: 'rgba(124,195,106,0.55)', target: { x: 738, y: 481 } },
-  { id: 'water', word: 'Stabilita', color: '#4aa8f0', glow: 'rgba(74,168,240,0.55)',  target: { x: 158, y: 608 } },
-  { id: 'wind',  word: 'Autorita',  color: '#9fd0d6', glow: 'rgba(159,208,214,0.55)', target: { x: 72, y: 231 } },
+  { id: 'Oheň',  word: 'Kalamita',  color: '#ff8a3d', glow: 'rgba(255,138,61,0.55)', target: { x: 444, y: 370 } },
+  { id: 'Země', word: 'Priorita',  color: '#7cc36a', glow: 'rgba(124,195,106,0.55)', target: { x: 738, y: 481 } },
+  { id: 'Voda', word: 'Stabilita', color: '#4aa8f0', glow: 'rgba(74,168,240,0.55)',  target: { x: 158, y: 608 } },
+  { id: 'Vzduch',  word: 'Autorita',  color: '#9fd0d6', glow: 'rgba(159,208,214,0.55)', target: { x: 72, y: 231 } },
 ];
 const TOLERANCE = 45;        // px radius counted as "fully matched"
 const REVEAL_START = 0.90;   // proximity at which the first letters appear
@@ -372,7 +369,7 @@ function buildLegend() {
     const sub = document.createElement('div');
     sub.className = 'sub';
     sub.id = 'sub-' + p.id;
-    sub.textContent = 'find it';
+    sub.textContent = 'nalezni';
 
     item.appendChild(thumbWrap);
     item.appendChild(label);
@@ -430,7 +427,7 @@ function updateMatch() {
       p.found = true;
       const sub = document.getElementById('sub-' + p.id);
       const item = document.getElementById('legend-' + p.id);
-      if (sub) sub.textContent = 'found!';
+      if (sub) sub.textContent = 'Nalezeno!';
       if (item) item.classList.add('found');
     }
   });
