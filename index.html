@@ -78,8 +78,8 @@
     color: var(--muted);
   }
   .target-thumb {
-    width: 72px;
-    height: 72px;
+    width: 128px;
+    height: 128px;
     border-radius: 50%;
     overflow: hidden;
     box-shadow: 0 0 0 2px var(--item-color, var(--accent)), 0 0 14px var(--item-glow, rgba(255,138,61,0.35));
@@ -357,7 +357,7 @@ function buildLegend() {
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'target-thumb';
     const canvas = document.createElement('canvas');
-    canvas.width = 72; canvas.height = 72;
+    canvas.width = 128; canvas.height = 128;
     canvas.id = 'thumb-' + p.id;
     thumbWrap.appendChild(canvas);
 
