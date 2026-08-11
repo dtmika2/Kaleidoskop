@@ -320,16 +320,21 @@ const REVEAL_START = 0.90;   // proximity at which the first letters appear
 const REVEAL_FULL  = 0.98;   // proximity at which the whole word is visible
 const ACTIVE_THRESHOLD = 0.05; // below this proximity, no pattern is "active" (overlay stays empty)
 
-// Build a symmetric outside-in reveal order for any word length, e.g. for
-// length 8: [0,7,1,6,2,5,3,4] -- first/last letters together, then working in.
+// Build a "diametrically opposite" reveal order: pair each letter with the
+// one exactly half the word-length away (i <-> i+len/2), like opposite points
+// on a circle. Reveal starts one step in from that seam and saves the pair
+// containing the true first letter (and, for odd lengths, the true last
+// letter) for last. E.g. for "Kalamita" (len 8): [1,5,2,6,3,7,0,4] -- "a i",
+// "l t", "a a", then "K m" last.
 function genRevealOrder(len) {
+  if (len <= 1) return len === 1 ? [0] : [];
+  const half = Math.floor(len / 2);
   const order = [];
-  let lo = 0, hi = len - 1;
-  while (lo <= hi) {
-    order.push(lo);
-    if (hi !== lo) order.push(hi);
-    lo++; hi--;
+  for (let i = 1; i < half; i++) {
+    order.push(i, i + half);
   }
+  order.push(0, half);
+  if (len % 2 === 1) order.push(len - 1);
   return order;
 }
 PATTERNS.forEach(p => {
