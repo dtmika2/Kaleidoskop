@@ -185,10 +185,10 @@ stage.addEventListener('pointermove', e => {
 
 /* ---------- 4. Pattern matching: drives the ring's color/glow and the hidden word ---------- */
 const PATTERNS = [
-  { id: 'Oheň',   word: 'Kalamita',  color: '#ff8a3d', glow: 'rgba(255,138,61,0.55)', target: { x: 444, y: 370 } },
-  { id: 'Země',   word: 'Priorita',  color: '#7cc36a', glow: 'rgba(124,195,106,0.55)', target: { x: 738, y: 481 } },
-  { id: 'Voda',   word: 'Stabilita', color: '#4aa8f0', glow: 'rgba(74,168,240,0.55)',  target: { x: 158, y: 608 } },
-  { id: 'Vzduch', word: 'Autorita',  color: '#9fd0d6', glow: 'rgba(159,208,214,0.55)', target: { x: 72, y: 231 } },
+  { id: 'Oheň',   word: 'Zrcadlo',  color: '#ff8a3d', glow: 'rgba(255,138,61,0.55)', target: { x: 444, y: 370 } },
+  { id: 'Země',   word: 'Jeskyně',  color: '#7cc36a', glow: 'rgba(124,195,106,0.55)', target: { x: 738, y: 481 } },
+  { id: 'Voda',   word: 'Spirála', color: '#4aa8f0', glow: 'rgba(74,168,240,0.55)',  target: { x: 158, y: 608 } },
+  { id: 'Vzduch', word: 'Kyvadlo',  color: '#9fd0d6', glow: 'rgba(159,208,214,0.55)', target: { x: 72, y: 231 } },
 ];
 const ACTIVE_THRESHOLD = 0.05; // below this proximity, no pattern is "active" (overlay stays empty)
 const REVEAL_START = 0.90;   // proximity at which the first letters appear
