@@ -121,8 +121,9 @@
     position: absolute;
     inset: 0;
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     justify-content: center;
+    padding-bottom: 14%;
     pointer-events: none;
     z-index: 5;
     gap: 2px;
@@ -135,12 +136,12 @@
     color: var(--ring-color, var(--accent));
     text-shadow: 0 0 26px var(--ring-glow, rgba(255,138,61,0.95)), 0 0 12px rgba(0,0,0,1), 0 4px 8px rgba(0,0,0,0.95), 0 10px 22px rgba(0,0,0,0.85);
     opacity: 0;
-    transform: scale(0.7);
+    transform: translateY(var(--curve-y, 0px)) scale(0.7);
     transition: opacity 0.4s ease, transform 0.4s ease, color 0.2s linear;
   }
   .word-overlay .letter.lit {
     opacity: 1;
-    transform: scale(1);
+    transform: translateY(var(--curve-y, 0px)) scale(1);
   }
 
   .ref-box {
@@ -391,11 +392,17 @@ function setActivePattern(pattern) {
   activePatternId = pattern ? pattern.id : null;
   wordOverlay.innerHTML = '';
   if (!pattern) return;
-  Array.from(pattern.word).forEach((ch, idx) => {
+  const letters = Array.from(pattern.word);
+  const mid = (letters.length - 1) / 2 || 1;
+  const CURVE_AMPLITUDE = 14; // px, "slight" U-shaped sag toward the center letters
+  letters.forEach((ch, idx) => {
     const span = document.createElement('span');
     span.className = 'letter';
     span.dataset.idx = idx;
     span.textContent = ch;
+    const t = (idx - (letters.length - 1) / 2) / mid;
+    const curveY = CURVE_AMPLITUDE * (1 - t * t);
+    span.style.setProperty('--curve-y', curveY.toFixed(1) + 'px');
     wordOverlay.appendChild(span);
   });
 }
