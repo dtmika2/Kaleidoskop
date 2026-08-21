@@ -54,6 +54,24 @@
     transition: opacity 0.15s linear, border-color 0.2s linear, box-shadow 0.2s linear;
   }
 
+  /* Virtual cursor shown while the pointer is locked (see pointer-lock JS) --
+     the real OS cursor is hidden then, so this dot is the only visual cursor. */
+  .cursor-dot {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    margin-left: -6px;
+    margin-top: -6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.55), 0 0 10px rgba(255,138,61,0.9);
+    pointer-events: none;
+    z-index: 4;
+    display: none;
+  }
+
   .word-overlay {
     position: absolute;
     inset: 0;
@@ -90,6 +108,7 @@
       <div class="word-overlay" id="wordOverlay"><!-- letters injected per active pattern --></div>
     </div>
     <div class="glow-ring" id="ring"></div>
+    <div class="cursor-dot" id="cursorDot"></div>
   </div>
 
 <script>
@@ -173,31 +192,114 @@ window.addEventListener('orientationchange', resizeCanvas);
 resizeCanvas();
 drawKaleidoscope();
 
+const cursorDot = document.getElementById('cursorDot');
+
+// Pointer Lock: an absolute page-coordinate cursor can never be "moved" by
+// the app -- the browser gives no API to relocate the real OS pointer, so
+// an idle drift-to-center always got instantly undone by the next real
+// mouse move landing back at its old physical spot. Locking the pointer
+// hides the OS cursor and switches input to movementX/Y deltas, so our own
+// virtual cursor (pan) is fully decoupled from screen coordinates and a
+// drift-to-center actually sticks. cursorDot renders the virtual position
+// in place of the (now hidden) OS cursor. Engaged on click; the browser
+// always allows Esc to force it back off, which we fall back gracefully from.
+let pointerLocked = false;
+
+function updateCursorDotPosition() {
+  cursorDot.style.left = (pan.x / SRC_SIZE) * 100 + '%';
+  cursorDot.style.top = (pan.y / SRC_SIZE) * 100 + '%';
+}
+
+function applyCssCursor(hex) {
+  stage.style.cursor = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='6' fill='${encodeURIComponent(hex)}' stroke='%23000000' stroke-opacity='0.55' stroke-width='1.5'/></svg>") 10 10, pointer`;
+}
+
+stage.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' && document.pointerLockElement !== stage) {
+    const req = stage.requestPointerLock();
+    if (req && typeof req.catch === 'function') req.catch(() => {});
+  }
+});
+
+document.addEventListener('pointerlockchange', () => {
+  pointerLocked = document.pointerLockElement === stage;
+  cursorDot.style.display = pointerLocked ? 'block' : 'none';
+  if (pointerLocked) {
+    stage.style.cursor = 'none';
+    updateCursorDotPosition();
+  } else {
+    applyCssCursor(cursorColor || DEFAULT_CURSOR_COLOR);
+  }
+});
+document.addEventListener('pointerlockerror', () => {
+  pointerLocked = false;
+});
+
 stage.addEventListener('pointermove', e => {
+  cancelDrift(); // a real pointer position always wins over the idle drift
   const rect = stage.getBoundingClientRect();
-  let nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
-  let ny = (e.clientY - rect.top) / rect.height;
-  nx = Math.min(1, Math.max(0, nx));
-  ny = Math.min(1, Math.max(0, ny));
-  pan.x = nx * SRC_SIZE;
-  pan.y = ny * SRC_SIZE;
+  if (pointerLocked) {
+    pan.x = Math.min(SRC_SIZE, Math.max(0, pan.x + e.movementX * (SRC_SIZE / rect.width)));
+    pan.y = Math.min(SRC_SIZE, Math.max(0, pan.y + e.movementY * (SRC_SIZE / rect.height)));
+  } else {
+    let nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
+    let ny = (e.clientY - rect.top) / rect.height;
+    nx = Math.min(1, Math.max(0, nx));
+    ny = Math.min(1, Math.max(0, ny));
+    pan.x = nx * SRC_SIZE;
+    pan.y = ny * SRC_SIZE;
+  }
   drawKaleidoscope();
   updateMatch();
+  updateCursorDotPosition();
   scheduleIdleReset();
 });
 
-// After 20s with no pointer movement, drift back to the center so the
-// kaleidoscope doesn't stay stuck wherever the cursor last was.
-const IDLE_RESET_MS = 20000;
+// After 5s with no pointer movement, glide back to the center over time
+// (rather than snapping instantly) so the reset is visible as motion -- the
+// next visitor sees the pattern actually settled at center, not just an
+// image that happens to reset the moment they touch it.
+const IDLE_RESET_MS = 5000; // TODO: testing value, restore to 20000 before shipping
+const DRIFT_DURATION_MS = 1400;
 let idleTimer = null;
-function scheduleIdleReset() {
-  clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => {
-    pan.x = SRC_SIZE / 2;
-    pan.y = SRC_SIZE / 2;
+let driftAnimId = null;
+
+function cancelDrift() {
+  if (driftAnimId !== null) {
+    cancelAnimationFrame(driftAnimId);
+    driftAnimId = null;
+  }
+}
+
+function easeInOutQuad(t) {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+function driftToCenter() {
+  const startX = pan.x, startY = pan.y;
+  const targetX = SRC_SIZE / 2, targetY = SRC_SIZE / 2;
+  const startTime = performance.now();
+
+  function step(now) {
+    const t = Math.min(1, (now - startTime) / DRIFT_DURATION_MS);
+    const e = easeInOutQuad(t);
+    pan.x = startX + (targetX - startX) * e;
+    pan.y = startY + (targetY - startY) * e;
     drawKaleidoscope();
     updateMatch();
-  }, IDLE_RESET_MS);
+    updateCursorDotPosition();
+    if (t < 1) {
+      driftAnimId = requestAnimationFrame(step);
+    } else {
+      driftAnimId = null;
+    }
+  }
+  driftAnimId = requestAnimationFrame(step);
+}
+
+function scheduleIdleReset() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(driftToCenter, IDLE_RESET_MS);
 }
 scheduleIdleReset();
 
@@ -243,7 +345,9 @@ let cursorColor = null; // tracks the last color applied, so we only touch style
 function setCursorDotColor(hex) {
   if (hex === cursorColor) return;
   cursorColor = hex;
-  stage.style.cursor = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='6' fill='${encodeURIComponent(hex)}' stroke='%23000000' stroke-opacity='0.55' stroke-width='1.5'/></svg>") 10 10, pointer`;
+  cursorDot.style.background = hex;
+  cursorDot.style.boxShadow = `0 0 0 2px rgba(0,0,0,0.55), 0 0 10px ${hex}`;
+  if (!pointerLocked) applyCssCursor(hex);
 }
 
 function setActivePattern(pattern) {
