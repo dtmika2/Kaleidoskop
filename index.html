@@ -351,6 +351,14 @@ const meterFill = document.getElementById('meterFill');
 const wordOverlay = document.getElementById('wordOverlay');
 let activePatternId = null; // which pattern's letters are currently rendered in the overlay
 
+const DEFAULT_CURSOR_COLOR = '#ff8a3d';
+let cursorColor = null; // tracks the last color applied, so we only touch style.cursor on change
+function setCursorDotColor(hex) {
+  if (hex === cursorColor) return;
+  cursorColor = hex;
+  stage.style.cursor = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='6' fill='${encodeURIComponent(hex)}' stroke='%23000000' stroke-opacity='0.55' stroke-width='1.5'/></svg>") 10 10, pointer`;
+}
+
 function buildLegend() {
   const box = document.getElementById('targetBox');
   box.innerHTML = '';
@@ -458,10 +466,12 @@ function updateMatch() {
     meterFill.style.width = (bestProximity * 100).toFixed(0) + '%';
     ring.style.opacity = bestProximity > 0.15 ? (bestProximity * 0.9).toFixed(2) : 0;
     updateWordReveal(best, bestProximity);
+    setCursorDotColor(best.color);
   } else {
     setActivePattern(null);
     meterFill.style.width = '0%';
     ring.style.opacity = 0;
+    setCursorDotColor(DEFAULT_CURSOR_COLOR);
   }
 }
 updateMatch();
