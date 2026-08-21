@@ -296,7 +296,24 @@ stage.addEventListener('pointermove', e => {
   drawKaleidoscope();
   updateMatch();
   updateRefMarker();
+  scheduleIdleReset();
 });
+
+// After 20s with no pointer movement, drift back to the center so the
+// kaleidoscope doesn't stay stuck wherever the cursor last was.
+const IDLE_RESET_MS = 20000;
+let idleTimer = null;
+function scheduleIdleReset() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    pan.x = SRC_SIZE / 2;
+    pan.y = SRC_SIZE / 2;
+    drawKaleidoscope();
+    updateMatch();
+    updateRefMarker();
+  }, IDLE_RESET_MS);
+}
+scheduleIdleReset();
 
 function updateRefMarker() {
   const marker = document.getElementById('refMarker');

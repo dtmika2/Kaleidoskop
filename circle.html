@@ -183,7 +183,23 @@ stage.addEventListener('pointermove', e => {
   pan.y = ny * SRC_SIZE;
   drawKaleidoscope();
   updateMatch();
+  scheduleIdleReset();
 });
+
+// After 20s with no pointer movement, drift back to the center so the
+// kaleidoscope doesn't stay stuck wherever the cursor last was.
+const IDLE_RESET_MS = 20000;
+let idleTimer = null;
+function scheduleIdleReset() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    pan.x = SRC_SIZE / 2;
+    pan.y = SRC_SIZE / 2;
+    drawKaleidoscope();
+    updateMatch();
+  }, IDLE_RESET_MS);
+}
+scheduleIdleReset();
 
 /* ---------- 4. Pattern matching: drives the ring's color/glow and the hidden word ---------- */
 const PATTERNS = [
