@@ -214,6 +214,23 @@ function applyCssCursor(hex) {
   stage.style.cursor = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='6' fill='${encodeURIComponent(hex)}' stroke='%23000000' stroke-opacity='0.55' stroke-width='1.5'/></svg>") 10 10, pointer`;
 }
 
+// The stage is a circle inscribed in its square bounding box, so the movable
+// area is a circle of radius SRC_SIZE/2 around the box's center -- clamping
+// pan to the square (as before) let the cursor wander into the box's
+// corners, visibly outside the ring. All 4 pattern targets sit within this
+// radius, so they stay reachable.
+function clampPanToCircle() {
+  const cx = SRC_SIZE / 2, cy = SRC_SIZE / 2;
+  const dx = pan.x - cx, dy = pan.y - cy;
+  const dist = Math.hypot(dx, dy);
+  const maxR = SRC_SIZE / 2;
+  if (dist > maxR) {
+    const scale = maxR / dist;
+    pan.x = cx + dx * scale;
+    pan.y = cy + dy * scale;
+  }
+}
+
 stage.addEventListener('pointerdown', e => {
   if (e.pointerType === 'mouse' && document.pointerLockElement !== stage) {
     const req = stage.requestPointerLock();
@@ -239,16 +256,15 @@ stage.addEventListener('pointermove', e => {
   cancelDrift(); // a real pointer position always wins over the idle drift
   const rect = stage.getBoundingClientRect();
   if (pointerLocked) {
-    pan.x = Math.min(SRC_SIZE, Math.max(0, pan.x + e.movementX * (SRC_SIZE / rect.width)));
-    pan.y = Math.min(SRC_SIZE, Math.max(0, pan.y + e.movementY * (SRC_SIZE / rect.height)));
+    pan.x += e.movementX * (SRC_SIZE / rect.width);
+    pan.y += e.movementY * (SRC_SIZE / rect.height);
   } else {
-    let nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
-    let ny = (e.clientY - rect.top) / rect.height;
-    nx = Math.min(1, Math.max(0, nx));
-    ny = Math.min(1, Math.max(0, ny));
+    const nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
+    const ny = (e.clientY - rect.top) / rect.height;
     pan.x = nx * SRC_SIZE;
     pan.y = ny * SRC_SIZE;
   }
+  clampPanToCircle();
   drawKaleidoscope();
   updateMatch();
   updateCursorDotPosition();
