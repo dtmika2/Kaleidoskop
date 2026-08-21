@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kaleidoskop-v1';
+const CACHE_NAME = 'kaleidoskop-v2';
 const PRECACHE_URLS = [
   './',
   'index.html',
