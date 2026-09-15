@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install Elementární Kaleidoskop</title>
+<link rel="manifest" href="../manifest.webmanifest">
+<meta name="theme-color" content="#12141a">
+<link rel="icon" href="../icons/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="../icons/icon-192.png">
+<style>
+  :root {
+    --bg: #12141a;
+    --panel: #1b1e27;
+    --accent: #ff8a3d;
+    --text: #eceef2;
+    --muted: #8b90a0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  .card {
+    width: 100%;
+    max-width: 380px;
+    background: var(--panel);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 22px;
+    padding: 34px 26px 28px;
+    text-align: center;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  }
+  .icon {
+    width: 96px;
+    height: 96px;
+    border-radius: 24px;
+    margin: 0 auto 18px;
+    display: block;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 0 38px rgba(255, 138, 61, 0.22);
+  }
+  h1 { font-size: 21px; font-weight: 600; margin: 0 0 6px; }
+  p.sub { color: var(--muted); font-size: 14px; line-height: 1.5; margin: 0 0 26px; }
+
+  button.install {
+    width: 100%;
+    padding: 15px 20px;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: inherit;
+    color: #1a1005;
+    background: var(--accent);
+    border: none;
+    border-radius: 14px;
+    cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+    box-shadow: 0 8px 24px rgba(255, 138, 61, 0.28);
+  }
+  button.install:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(255, 138, 61, 0.34); }
+  button.install:active { transform: translateY(0); }
+  button.install[disabled] { opacity: 0.55; cursor: default; transform: none; box-shadow: none; }
+
+  .hint {
+    margin: 16px 0 0;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+  .hint b { color: var(--text); font-weight: 600; }
+  .open-link {
+    display: inline-block;
+    margin-top: 22px;
+    font-size: 13px;
+    color: var(--muted);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(139, 144, 160, 0.4);
+    padding-bottom: 2px;
+  }
+  .open-link:hover { color: var(--text); border-bottom-color: var(--accent); }
+</style>
+</head>
+<body>
+<main class="card">
+  <img class="icon" src="../icons/icon-512.png" alt="Elementární Kaleidoskop" width="96" height="96">
+  <h1>Elementární Kaleidoskop</h1>
+  <p class="sub">Interaktivní kaleidoskop se čtyřmi skrytými elementárními vzory. Nainstaluj si ho jako aplikaci &mdash; funguje i offline.</p>
+
+  <button class="install" id="installBtn" disabled>Připravuji instalaci&hellip;</button>
+  <p class="hint" id="hint"></p>
+
+  <a class="open-link" href="../circle.html">Otevřít v prohlížeči</a>
+</main>
+
+<script>
+const btn = document.getElementById('installBtn');
+const hint = document.getElementById('hint');
+let deferredPrompt = null;
+
+const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+              (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function setReady() {
+  btn.disabled = false;
+  btn.textContent = 'Instalovat aplikaci';
+  hint.textContent = '';
+}
+
+function setInstalled() {
+  btn.disabled = true;
+  btn.textContent = 'Aplikace je nainstalovaná';
+  hint.textContent = '';
+}
+
+function setManual() {
+  btn.disabled = true;
+  if (isIOS) {
+    btn.textContent = 'Přidat na plochu';
+    hint.innerHTML = 'V Safari klepni na <b>Sdílet</b> a zvol <b>Přidat na plochu</b>.';
+  } else {
+    btn.textContent = 'Instalace přes prohlížeč';
+    hint.innerHTML = 'Použij <b>nabídku prohlížeče</b> a zvol <b>Instalovat aplikaci</b>.';
+  }
+}
+
+if (isStandalone) {
+  setInstalled();
+} else {
+  // Give the browser a moment to fire beforeinstallprompt before falling
+  // back to manual instructions.
+  setTimeout(() => { if (!deferredPrompt && !isStandalone) setManual(); }, 2500);
+}
+
+window.addEventListener('beforeinstallprompt', event => {
+  event.preventDefault();
+  deferredPrompt = event;
+  if (!isStandalone) setReady();
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredPrompt = null;
+  setInstalled();
+});
+
+btn.addEventListener('click', async () => {
+  if (!deferredPrompt) return;
+  btn.disabled = true;
+  deferredPrompt.prompt();
+  const { outcome } = await deferredPrompt.userChoice;
+  deferredPrompt = null;
+  if (outcome === 'accepted') {
+    setInstalled();
+  } else {
+    setManual();
+  }
+});
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('../sw.js'));
+}
+</script>
+</body>
+</html>
