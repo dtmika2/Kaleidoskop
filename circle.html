@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b15';
+const BUILD = 'b16';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -180,6 +180,9 @@ const dbg = {
   hoverMoves: 0,
   dragMoves: 0,
   buttons: 0,
+  lockedMoves: 0,
+  lockChanges: 0,
+  lockErrors: 0,
   drifts: 0,
   lastHandler: '-',
   lastType: '-',       // pointerType of the last move: mouse, touch or pen
@@ -218,6 +221,9 @@ setInterval(() => {
                   : matchMedia('(display-mode: standalone)').matches ? 'standalone (status bar shows)'
                   : 'browser tab') + (document.fullscreenElement ? ' +api' : ''),
     'input     ' + dbg.lastType + '   touchpts ' + (navigator.maxTouchPoints || 0),
+    'lock      ' + (lockActive() ? 'ON' : (lockDisabled ? 'given up' : 'off'))
+                 + '   locked moves ' + dbg.lockedMoves
+                 + '   chg ' + dbg.lockChanges + '  err ' + dbg.lockErrors,
     'handler   ' + dbg.lastHandler,
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves,
     'buttons   ' + dbg.buttons,
@@ -420,6 +426,7 @@ stage.addEventListener('pointerdown', e => {
   dbg.lastType = e.pointerType;
   dbgEvent('down (' + e.pointerType + ')');
   enterFullscreenIfStandalone();
+  if (e.pointerType === 'mouse') requestLockIfPossible();
 });
 
 // A mouse reports movement far more often than the screen refreshes (125-1000
@@ -444,11 +451,92 @@ function requestDraw() {
   });
 }
 
+// Pointer Lock is the only thing in the platform that stops the real pointer
+// reaching the edge of the screen, where Android reveals the status bar over
+// the app. Gain alone cannot fix that -- it makes the edge hard to reach by
+// accident, not unreachable -- so lock is attempted again here, but strictly as
+// an enhancement: everything below still works when it is refused, and the
+// watchdog gives it up permanently at the first sign that it is not delivering.
+//
+// The earlier trouble with lock on this device was never tested against a
+// correct implementation, since the tablet was serving a stale build at the
+// time. If it misbehaves now, it disables itself within a fraction of a second
+// and the anchored path takes over, which is exactly the behaviour of b15.
+const LOCK_DEAD_MOVES = 20; // all-zero deltas in a row before giving up on lock
+
+let lockDisabled = false;
+let zeroMoveStreak = 0;
+let reanchorOnNextMove = false;
+
+function lockActive() {
+  return document.pointerLockElement === stage;
+}
+
+function requestLockIfPossible() {
+  if (lockDisabled || lockActive() || !stage.requestPointerLock) return;
+  try {
+    const p = stage.requestPointerLock();
+    if (p && typeof p.catch === 'function') p.catch(() => { lockDisabled = true; });
+  } catch (err) {
+    lockDisabled = true;
+  }
+}
+
+function abandonLock(why) {
+  lockDisabled = true;
+  dbgEvent('lock abandoned: ' + why);
+  if (lockActive() && document.exitPointerLock) document.exitPointerLock();
+}
+
+document.addEventListener('pointerlockchange', () => {
+  dbg.lockChanges++;
+  dbgEvent('lock -> ' + (lockActive() ? 'on' : 'off'));
+  zeroMoveStreak = 0;
+  // Coming out of lock, the pointer's real position is somewhere unrelated to
+  // where the dot is. Re-anchor on the next movement instead of letting the
+  // absolute mapping snap the dot across to it.
+  if (!lockActive()) reanchorOnNextMove = true;
+});
+
+document.addEventListener('pointerlockerror', () => {
+  dbg.lockErrors++;
+  abandonLock('error');
+});
+
+// While locked, clientX/clientY are frozen, so only the deltas mean anything.
+document.addEventListener('mousemove', e => {
+  if (!lockActive()) return;
+
+  const mvx = e.movementX || 0;
+  const mvy = e.movementY || 0;
+  // Some engines deliver lock without delivering deltas, which would leave the
+  // dot frozen and the app looking broken. Count the silence and bail out.
+  if (mvx === 0 && mvy === 0) {
+    if (++zeroMoveStreak >= LOCK_DEAD_MOVES) abandonLock('no movement delivered');
+    return;
+  }
+  zeroMoveStreak = 0;
+
+  dbg.absMoves++;
+  dbg.lockedMoves++;
+  dbg.lastHandler = 'mousemove (locked)';
+
+  const rect = stage.getBoundingClientRect();
+  pan.x += mvx * (SRC_SIZE / rect.width) * POINTER_GAIN;
+  pan.y += mvy * (SRC_SIZE / rect.height) * POINTER_GAIN;
+
+  cancelDrift();
+  noteActivity();
+  clampPanToCircle();
+  requestDraw();
+});
+
 // Listened for on window rather than the stage: the stage is a disc inside a
 // square box, so movement through its corners, or over the page around it, has
 // to count too -- otherwise the view sat still while the trackball was plainly
 // being moved.
 window.addEventListener('pointermove', e => {
+  if (lockActive()) return; // the locked handler above owns movement
   dbg.absMoves++;
   if (e.buttons) dbg.dragMoves++; else dbg.hoverMoves++;
   dbg.buttons = e.buttons;
@@ -457,6 +545,14 @@ window.addEventListener('pointermove', e => {
   dbg.clientX = e.clientX; dbg.clientY = e.clientY;
 
   const base = baseFromEvent(e);
+  if (reanchorOnNextMove) {
+    // First real position since lock ended: make it mean where the dot already
+    // is, so control resumes from there rather than teleporting.
+    reanchorOnNextMove = false;
+    anchor.x = pan.x - base.x;
+    anchor.y = pan.y - base.y;
+    lastBase = base;
+  }
   const travel = Math.hypot(base.x - lastBase.x, base.y - lastBase.y);
   lastBase = base;
 
