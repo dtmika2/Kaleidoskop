@@ -283,23 +283,45 @@ function requestDraw() {
   });
 }
 
-stage.addEventListener('pointermove', e => {
-  cancelDrift(); // a real pointer position always wins over the idle drift
+// Locked and unlocked movement are handled by two separate listeners, each
+// asking document.pointerLockElement directly rather than trusting a cached
+// flag. They must never both run for one physical movement: while locked,
+// clientX/clientY are frozen at the coordinates where the lock was engaged, so
+// the unlocked branch would set pan to the click point on every event -- the
+// virtual cursor being yanked back to where it was locked. A cached flag makes
+// that a live possibility, because any move that arrives before
+// pointerlockchange has fired sees the wrong value.
+//
+// The locked branch listens for mousemove, not pointermove: movementX/movementY
+// on a PointerEvent has long read 0 under pointer lock in Chromium (which is
+// what the installed PWA runs), while MouseEvent's deltas are the supported
+// path. The dot froze at the lock point either way.
+
+function trackMove() {
+  cancelDrift(); // a real pointer movement always wins over the idle drift
   noteActivity();
-  const rect = stage.getBoundingClientRect();
-  if (pointerLocked) {
-    // Deltas are summed on every event, including ones no draw follows --
-    // skipping any would lose that movement instead of merely deferring it.
-    pan.x += e.movementX * (SRC_SIZE / rect.width);
-    pan.y += e.movementY * (SRC_SIZE / rect.height);
-  } else {
-    const nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
-    const ny = (e.clientY - rect.top) / rect.height;
-    pan.x = nx * SRC_SIZE;
-    pan.y = ny * SRC_SIZE;
-  }
   clampPanToCircle(); // per event, so summed deltas cannot run up a debt past the rim
   requestDraw();
+}
+
+document.addEventListener('mousemove', e => {
+  if (document.pointerLockElement !== stage) return;
+  const rect = stage.getBoundingClientRect();
+  // Deltas are summed on every event, including ones no draw follows --
+  // skipping any would lose that movement instead of merely deferring it.
+  pan.x += e.movementX * (SRC_SIZE / rect.width);
+  pan.y += e.movementY * (SRC_SIZE / rect.height);
+  trackMove();
+});
+
+stage.addEventListener('pointermove', e => {
+  if (document.pointerLockElement === stage) return; // mousemove above owns this
+  const rect = stage.getBoundingClientRect();
+  const nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
+  const ny = (e.clientY - rect.top) / rect.height;
+  pan.x = nx * SRC_SIZE;
+  pan.y = ny * SRC_SIZE;
+  trackMove();
 });
 
 // After 20s with no pointer activity, glide back to the center over time
