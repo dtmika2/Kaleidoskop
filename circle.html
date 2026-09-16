@@ -72,6 +72,39 @@
     display: none;
   }
 
+  /* Build stamp. The service worker can serve a page from cache, so "is the
+     fix even running?" is otherwise unanswerable from inside the app. */
+  .build-badge {
+    position: fixed;
+    right: 8px;
+    bottom: 6px;
+    z-index: 10;
+    font: 11px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color: rgba(255,255,255,0.28);
+    letter-spacing: 0.5px;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  /* Diagnostics for the pointer-lock behaviour; toggled with the D key. */
+  .debug-panel {
+    position: fixed;
+    left: 8px;
+    top: 8px;
+    z-index: 10;
+    margin: 0;
+    padding: 8px 10px;
+    max-width: 46vw;
+    border-radius: 6px;
+    background: rgba(0,0,0,0.78);
+    color: #bfe6c0;
+    font: 11px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    white-space: pre;
+    pointer-events: none;
+    user-select: none;
+    display: none;
+  }
+
   .word-overlay {
     position: absolute;
     inset: 0;
@@ -110,8 +143,64 @@
     <div class="glow-ring" id="ring"></div>
     <div class="cursor-dot" id="cursorDot"></div>
   </div>
+  <div class="build-badge" id="buildBadge"></div>
+  <pre class="debug-panel" id="debugPanel"></pre>
 
 <script>
+/* ---------- 0. Build stamp and pointer diagnostics ---------- */
+// Bump BUILD on every change that gets pushed. It is shown in the corner so a
+// cached page can be told apart from a fresh one from inside the installed app.
+const BUILD = 'b9';
+document.getElementById('buildBadge').textContent = BUILD;
+
+// Counters, not logs: the question is which code path handles movement while
+// the pointer is locked, and whether the lock is actually holding.
+const dbg = {
+  lockChanges: 0,
+  lockErrors: 0,
+  lockedMoves: 0,
+  absMoves: 0,
+  drifts: 0,
+  lastHandler: '-',
+  mvx: 0, mvy: 0,
+  clientX: 0, clientY: 0,
+  events: [],
+};
+
+function dbgEvent(text) {
+  dbg.events.unshift(Math.round(performance.now() / 100) / 10 + 's ' + text);
+  if (dbg.events.length > 6) dbg.events.length = 6;
+}
+
+const debugPanel = document.getElementById('debugPanel');
+let debugVisible = false;
+
+window.addEventListener('keydown', e => {
+  if (e.key !== 'd' && e.key !== 'D') return;
+  debugVisible = !debugVisible;
+  debugPanel.style.display = debugVisible ? 'block' : 'none';
+});
+
+function lockElName() {
+  const el = document.pointerLockElement;
+  return el ? (el.id || el.tagName) : 'null';
+}
+
+setInterval(() => {
+  if (!debugVisible) return;
+  debugPanel.textContent = [
+    'build     ' + BUILD,
+    'lockEl    ' + lockElName() + '   changes ' + dbg.lockChanges + '  err ' + dbg.lockErrors,
+    'handler   ' + dbg.lastHandler,
+    'moves     locked ' + dbg.lockedMoves + '   absolute ' + dbg.absMoves,
+    'movement  ' + dbg.mvx + ', ' + dbg.mvy,
+    'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
+    'pan       ' + Math.round(pan.x) + ', ' + Math.round(pan.y),
+    'drifts    ' + dbg.drifts,
+    '',
+  ].concat(dbg.events).join('\n');
+}, 100);
+
 /* ---------- 1. Load the source texture ---------- */
 const SRC_SIZE = 900; // matches the embedded image's native size
 const src = document.createElement('canvas');
@@ -249,6 +338,8 @@ stage.addEventListener('pointerdown', e => {
 
 document.addEventListener('pointerlockchange', () => {
   pointerLocked = document.pointerLockElement === stage;
+  dbg.lockChanges++;
+  dbgEvent('lockchange -> ' + lockElName());
   cursorDot.style.display = pointerLocked ? 'block' : 'none';
   if (pointerLocked) {
     stage.style.cursor = 'none';
@@ -259,6 +350,8 @@ document.addEventListener('pointerlockchange', () => {
 });
 document.addEventListener('pointerlockerror', () => {
   pointerLocked = false;
+  dbg.lockErrors++;
+  dbgEvent('lockerror');
 });
 
 // A mouse reports movement far more often than the screen refreshes (125-1000
@@ -306,6 +399,10 @@ function trackMove() {
 
 document.addEventListener('mousemove', e => {
   if (document.pointerLockElement !== stage) return;
+  dbg.lockedMoves++;
+  dbg.lastHandler = 'mousemove (locked)';
+  dbg.mvx = e.movementX; dbg.mvy = e.movementY;
+  dbg.clientX = e.clientX; dbg.clientY = e.clientY;
   const rect = stage.getBoundingClientRect();
   // Deltas are summed on every event, including ones no draw follows --
   // skipping any would lose that movement instead of merely deferring it.
@@ -316,6 +413,10 @@ document.addEventListener('mousemove', e => {
 
 stage.addEventListener('pointermove', e => {
   if (document.pointerLockElement === stage) return; // mousemove above owns this
+  dbg.absMoves++;
+  dbg.lastHandler = 'pointermove (absolute)';
+  dbg.mvx = e.movementX; dbg.mvy = e.movementY;
+  dbg.clientX = e.clientX; dbg.clientY = e.clientY;
   const rect = stage.getBoundingClientRect();
   const nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
   const ny = (e.clientY - rect.top) / rect.height;
@@ -347,6 +448,8 @@ function easeInOutQuad(t) {
 }
 
 function driftToCenter() {
+  dbg.drifts++;
+  dbgEvent('drift to center');
   const startX = pan.x, startY = pan.y;
   const targetX = SRC_SIZE / 2, targetY = SRC_SIZE / 2;
   const startTime = performance.now();
