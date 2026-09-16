@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b19';
+const BUILD = 'b20';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -186,12 +186,30 @@ const dbg = {
   driftFrames: 0,     // the idle glide writes pan every frame while it runs
   mvx: 0, mvy: 0,     // raw deltas as delivered under lock
   zeroStreak: 0,
+  // A snapshot cannot show whether the deltas are too small or are arriving and
+  // then being undone. These two together can: travel is every delta added up
+  // regardless of direction, and panrange is how far the dot actually got.
+  // Large travel with a small range means movement goes in and is cancelled;
+  // small travel means it is not arriving at all; a large range with pan back
+  // near the middle means something pulls it back.
+  travelX: 0, travelY: 0,
+  panMinX: 450, panMaxX: 450,
+  panMinY: 450, panMaxY: 450,
   drifts: 0,
   lastHandler: '-',
   lastType: '-',       // pointerType of the last move: mouse, touch or pen
   clientX: 0, clientY: 0,
   events: [],
 };
+
+function resetMovementStats() {
+  dbg.travelX = 0; dbg.travelY = 0;
+  dbg.panMinX = dbg.panMaxX = pan.x;
+  dbg.panMinY = dbg.panMaxY = pan.y;
+  dbg.lockedMoves = 0;
+  dbg.hoverMoves = 0;
+  dbgEvent('stats reset');
+}
 
 
 function dbgEvent(text) {
@@ -207,6 +225,10 @@ function toggleDebug() {
   debugVisible = !debugVisible;
   debugPanel.style.display = debugVisible ? 'block' : 'none';
   buildBadge.classList.toggle('on', debugVisible);
+  // Opening it starts a fresh measurement, so one deliberate sweep after
+  // opening is a self-contained test rather than a reading mixed in with
+  // everything that has happened since the app started.
+  if (debugVisible) resetMovementStats();
 }
 
 // Tap the badge (tablet) or press D (desktop).
@@ -229,7 +251,10 @@ setInterval(() => {
                  + '   chg ' + dbg.lockChanges + '  err ' + dbg.lockErrors,
     'handler   ' + dbg.lastHandler,
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves,
-    'movement  ' + dbg.mvx + ', ' + dbg.mvy + '   zeros ' + dbg.zeroStreak,
+    'movement  ' + dbg.mvx + ', ' + dbg.mvy,
+    'travel    ' + Math.round(dbg.travelX) + ', ' + Math.round(dbg.travelY),
+    'panrange  x ' + Math.round(dbg.panMaxX - dbg.panMinX)
+                   + '   y ' + Math.round(dbg.panMaxY - dbg.panMinY),
     'drift     frames ' + dbg.driftFrames + '   starts ' + dbg.drifts
                         + '   active ' + (driftAnimId !== null ? 'YES' : 'no'),
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
@@ -364,8 +389,16 @@ const POINTER_GAIN = 1.6;
 // stays the same whatever the screen.
 function applyPointerDelta(dx, dy) {
   const rect = stage.getBoundingClientRect();
-  pan.x += dx * (SRC_SIZE / rect.width) * POINTER_GAIN;
-  pan.y += dy * (SRC_SIZE / rect.height) * POINTER_GAIN;
+  const sx = dx * (SRC_SIZE / rect.width) * POINTER_GAIN;
+  const sy = dy * (SRC_SIZE / rect.height) * POINTER_GAIN;
+  dbg.travelX += Math.abs(sx);
+  dbg.travelY += Math.abs(sy);
+  pan.x += sx;
+  pan.y += sy;
+  if (pan.x < dbg.panMinX) dbg.panMinX = pan.x;
+  if (pan.x > dbg.panMaxX) dbg.panMaxX = pan.x;
+  if (pan.y < dbg.panMinY) dbg.panMinY = pan.y;
+  if (pan.y > dbg.panMaxY) dbg.panMaxY = pan.y;
   cancelDrift(); // a real movement always wins over the idle drift
   noteActivity();
   clampPanToCircle();
