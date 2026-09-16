@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b20';
+const BUILD = 'b21';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -208,6 +208,8 @@ function resetMovementStats() {
   dbg.panMinY = dbg.panMaxY = pan.y;
   dbg.lockedMoves = 0;
   dbg.hoverMoves = 0;
+  dbg.lastHandler = '(nothing since reset)';
+  dbg.mvx = 0; dbg.mvy = 0;
   dbgEvent('stats reset');
 }
 
@@ -460,6 +462,14 @@ function onGesture(e) {
 
 window.addEventListener('pointerdown', onGesture);
 window.addEventListener('touchstart', onGesture, { passive: true });
+// A real mouse press is the gesture with the best chance of being allowed to
+// capture the mouse, so it gets its own attempt rather than sharing the
+// pointerdown path, where a touch may already have used up the gesture.
+window.addEventListener('mousedown', () => {
+  dbg.lastType = 'mouse';
+  dbgEvent('mousedown');
+  requestLockIfPossible();
+});
 
 // A mouse reports movement far more often than the screen refreshes (125-1000
 // Hz against 60-120 Hz), and every draw is a full repaint of the whole circle.
@@ -508,9 +518,15 @@ function requestLockIfPossible() {
   if (lockDisabled || lockActive() || !stage.requestPointerLock) return;
   try {
     const p = stage.requestPointerLock();
-    if (p && typeof p.catch === 'function') p.catch(() => { lockDisabled = true; });
+    if (p && typeof p.catch === 'function') {
+      p.catch(() => {
+        dbg.lockErrors++;
+        dbgEvent('lock refused ' + dbg.lockErrors + ' (' + dbg.lastType + ')');
+        if (dbg.lockErrors >= LOCK_ERROR_BUDGET) abandonLock('repeated refusals');
+      });
+    }
   } catch (err) {
-    lockDisabled = true;
+    dbgEvent('lock threw');
   }
 }
 
@@ -535,9 +551,18 @@ document.addEventListener('pointerlockchange', () => {
   }
 });
 
+// A request made from a touch gesture fails: there is no mouse pointer to
+// capture in that context. Asking on any gesture is still right -- on a kiosk
+// nobody clicks a trackball button either -- but treating that failure as
+// final meant one finger tap disabled locking for the whole session, including
+// the tap that opens this readout. Errors are tolerated and retried now; only a
+// persistent run of them gives up.
+const LOCK_ERROR_BUDGET = 8;
+
 document.addEventListener('pointerlockerror', () => {
   dbg.lockErrors++;
-  abandonLock('error');
+  dbgEvent('lock error ' + dbg.lockErrors + ' (' + dbg.lastType + ')');
+  if (dbg.lockErrors >= LOCK_ERROR_BUDGET) abandonLock('repeated errors');
 });
 
 // The lock drops on its own here -- four times in eighty seconds on b17, with
