@@ -166,13 +166,20 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b12';
+const BUILD = 'b13';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
 // the pointer is locked, and whether the lock is actually holding.
 const dbg = {
   absMoves: 0,
+  // Hovering and pressed movement counted apart. Under Fully Kiosk's kiosk mode
+  // only the pressed kind arrives, and which of the two counters moves says
+  // whether the WebView is being denied hover events or is being handed the
+  // input as touch, where hovering cannot exist at all.
+  hoverMoves: 0,
+  dragMoves: 0,
+  buttons: 0,
   drifts: 0,
   lastHandler: '-',
   lastType: '-',       // pointerType of the last move: mouse, touch or pen
@@ -209,7 +216,9 @@ setInterval(() => {
     'build     ' + BUILD,
     'display   ' + (matchMedia('(display-mode: standalone)').matches ? 'standalone (PWA)' : 'browser tab'),
     'input     ' + dbg.lastType + '   touchpts ' + (navigator.maxTouchPoints || 0),
-    'handler   ' + dbg.lastHandler + '   moves ' + dbg.absMoves,
+    'handler   ' + dbg.lastHandler,
+    'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves,
+    'buttons   ' + dbg.buttons,
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
     'base      ' + Math.round(lastBase.x) + ', ' + Math.round(lastBase.y),
     'anchor    ' + Math.round(anchor.x) + ', ' + Math.round(anchor.y),
@@ -401,6 +410,8 @@ function requestDraw() {
 // being moved.
 window.addEventListener('pointermove', e => {
   dbg.absMoves++;
+  if (e.buttons) dbg.dragMoves++; else dbg.hoverMoves++;
+  dbg.buttons = e.buttons;
   dbg.lastHandler = 'pointermove (anchored)';
   dbg.lastType = e.pointerType;
   dbg.clientX = e.clientX; dbg.clientY = e.clientY;
