@@ -166,8 +166,23 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b23';
+const BUILD = 'b24';
 document.getElementById('buildBadge').textContent = BUILD;
+
+// A thrown error in a pointer handler stops movement dead and looks from the
+// outside exactly like a logic bug, which cost a whole build to work out: b23
+// deleted a variable's declaration along with the code around it, so every
+// pointermove threw and nothing moved. The badge now turns red and names the
+// error, so a broken build says so instead of just sitting there.
+window.addEventListener('error', event => {
+  const badge = document.getElementById('buildBadge');
+  badge.textContent = BUILD + ' ERR';
+  badge.style.color = '#ff6b6b';
+  badge.style.background = 'rgba(60,0,0,0.85)';
+  if (typeof dbgEvent === 'function') {
+    dbgEvent('ERROR ' + (event.message || 'unknown'));
+  }
+});
 
 // Counters, not logs: the question is which code path handles movement while
 // the pointer is locked, and whether the lock is actually holding.
@@ -206,7 +221,10 @@ function resetMovementStats() {
 }
 
 
+let lastError = '';
+
 function dbgEvent(text) {
+  if (text.indexOf('ERROR ') === 0) lastError = text.slice(6);
   dbg.events.unshift(Math.round(performance.now() / 100) / 10 + 's ' + text);
   if (dbg.events.length > 6) dbg.events.length = 6;
 }
@@ -235,7 +253,7 @@ window.addEventListener('keydown', e => {
 setInterval(() => {
   if (!debugVisible) return;
   debugPanel.textContent = [
-    'build     ' + BUILD,
+    'build     ' + BUILD + (lastError ? '   ERROR: ' + lastError : ''),
     'display   ' + (matchMedia('(display-mode: fullscreen)').matches ? 'fullscreen'
                   : matchMedia('(display-mode: standalone)').matches ? 'standalone (status bar shows)'
                   : 'browser tab') + (document.fullscreenElement ? ' +api' : ''),
@@ -378,6 +396,10 @@ function updateCursorDotPosition() {
 // Pointer Lock's one genuine advantage -- so the next best thing is giving it
 // no reason to go there.
 const POINTER_GAIN = 1.6;
+
+// Previous pointer position. Movement is the difference between one event and
+// the next, so this is the whole of the tracking state.
+let lastClient = null;
 
 // The one place pan is moved by the pointer. dx/dy arrive in CSS pixels and are
 // converted to source units through the stage's current size, so sensitivity
