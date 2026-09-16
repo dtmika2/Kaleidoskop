@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kaleidoskop-v13';
+const CACHE_NAME = 'kaleidoskop-v14';
 const PRECACHE_URLS = [
   'circle.html',
   'install/index.html',

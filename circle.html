@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b14';
+const BUILD = 'b15';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -352,13 +352,28 @@ function updateCursorDotPosition() {
   cursorDot.style.top = (pan.y / SRC_SIZE) * 100 + '%';
 }
 
+// Gain keeps the real pointer away from the edges of the screen. The circle is
+// 94vmin, so on a landscape tablet it is 94% of the screen height, and mapping
+// it 1:1 meant reaching the top of the circle required the pointer to be within
+// a few percent of the top of the screen -- far enough into Android's reveal
+// zone to pull the status bar down over the app. At a gain of 1.6 the pointer
+// covers the whole circle from within the middle ~62% of the screen, so the top
+// of the circle sits around a fifth of the way down instead of at the very
+// edge. Nothing in the web platform can confine the real pointer -- that was
+// Pointer Lock's one genuine advantage -- so the next best thing is giving it
+// no reason to go there.
+const POINTER_GAIN = 1.6;
+
 // Coordinates outside the stage map outside 0..SRC_SIZE quite happily; they get
 // clamped back onto the circle afterwards.
 function baseFromEvent(e) {
   const rect = stage.getBoundingClientRect();
+  const half = SRC_SIZE / 2;
+  const x = ((e.clientX - rect.left) / rect.width) * SRC_SIZE;
+  const y = ((e.clientY - rect.top) / rect.height) * SRC_SIZE;
   return {
-    x: ((e.clientX - rect.left) / rect.width) * SRC_SIZE,
-    y: ((e.clientY - rect.top) / rect.height) * SRC_SIZE,
+    x: half + (x - half) * POINTER_GAIN, // scaled about the circle's center, so
+    y: half + (y - half) * POINTER_GAIN, // the middle still maps to the middle
   };
 }
 
