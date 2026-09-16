@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b16';
+const BUILD = 'b17';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -183,6 +183,9 @@ const dbg = {
   lockedMoves: 0,
   lockChanges: 0,
   lockErrors: 0,
+  driftFrames: 0,     // the idle glide writes pan every frame while it runs
+  mvx: 0, mvy: 0,     // raw deltas as delivered under lock
+  zeroStreak: 0,
   drifts: 0,
   lastHandler: '-',
   lastType: '-',       // pointerType of the last move: mouse, touch or pen
@@ -226,7 +229,9 @@ setInterval(() => {
                  + '   chg ' + dbg.lockChanges + '  err ' + dbg.lockErrors,
     'handler   ' + dbg.lastHandler,
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves,
-    'buttons   ' + dbg.buttons,
+    'movement  ' + dbg.mvx + ', ' + dbg.mvy + '   zeros ' + dbg.zeroStreak,
+    'drift     frames ' + dbg.driftFrames + '   starts ' + dbg.drifts
+                        + '   active ' + (driftAnimId !== null ? 'YES' : 'no'),
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
     'base      ' + Math.round(lastBase.x) + ', ' + Math.round(lastBase.y),
     'anchor    ' + Math.round(anchor.x) + ', ' + Math.round(anchor.y),
@@ -512,7 +517,8 @@ document.addEventListener('mousemove', e => {
   // Some engines deliver lock without delivering deltas, which would leave the
   // dot frozen and the app looking broken. Count the silence and bail out.
   if (mvx === 0 && mvy === 0) {
-    if (++zeroMoveStreak >= LOCK_DEAD_MOVES) abandonLock('no movement delivered');
+    dbg.zeroStreak = ++zeroMoveStreak;
+    if (zeroMoveStreak >= LOCK_DEAD_MOVES) abandonLock('no movement delivered');
     return;
   }
   zeroMoveStreak = 0;
@@ -520,6 +526,7 @@ document.addEventListener('mousemove', e => {
   dbg.absMoves++;
   dbg.lockedMoves++;
   dbg.lastHandler = 'mousemove (locked)';
+  dbg.mvx = mvx; dbg.mvy = mvy;
 
   const rect = stage.getBoundingClientRect();
   pan.x += mvx * (SRC_SIZE / rect.width) * POINTER_GAIN;
@@ -611,6 +618,11 @@ function driftToCenter() {
     // already means "here" whenever movement resumes.
     anchor.x = pan.x - lastBase.x;
     anchor.y = pan.y - lastBase.y;
+    // Named in the readout because this loop overwrites pan on every frame; if
+    // it is running when it should not be, it looks exactly like movement being
+    // dragged back to a fixed point.
+    dbg.driftFrames++;
+    dbg.lastHandler = 'DRIFT (overwriting pan)';
     renderNow();
     if (t < 1) {
       driftAnimId = requestAnimationFrame(step);
