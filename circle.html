@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b22';
+const BUILD = 'b23';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -180,23 +180,12 @@ const dbg = {
   hoverMoves: 0,
   dragMoves: 0,
   buttons: 0,
-  lockedMoves: 0,
-  lockChanges: 0,
-  lockErrors: 0,
   driftFrames: 0,     // the idle glide writes pan every frame while it runs
-  mvx: 0, mvy: 0,     // raw deltas as delivered under lock
-  zeroStreak: 0,
-  // A snapshot cannot show whether the deltas are too small or are arriving and
-  // then being undone. These two together can: travel is every delta added up
-  // regardless of direction, and panrange is how far the dot actually got.
-  // Large travel with a small range means movement goes in and is cancelled;
-  // small travel means it is not arriving at all; a large range with pan back
-  // near the middle means something pulls it back.
+  mvx: 0, mvy: 0,     // the last delta applied
+  // travel is every delta added up regardless of direction, so it measures what
+  // arrived; panrange is how far the dot actually got. The two disagreeing by
+  // an order of magnitude is what exposed the lock cancelling its own input.
   travelX: 0, travelY: 0,
-  // warps counts deltas discarded as the pointer's return trip; reversals
-  // counts direction changes that survived. If travel and panrange come into
-  // line and warps is roughly half the locked moves, the diagnosis holds.
-  warps: 0, reversals: 0,
   panMinX: 450, panMaxX: 450,
   panMinY: 450, panMaxY: 450,
   drifts: 0,
@@ -210,11 +199,7 @@ function resetMovementStats() {
   dbg.travelX = 0; dbg.travelY = 0;
   dbg.panMinX = dbg.panMaxX = pan.x;
   dbg.panMinY = dbg.panMaxY = pan.y;
-  dbg.lockedMoves = 0;
   dbg.hoverMoves = 0;
-  dbg.warps = 0;
-  dbg.reversals = 0;
-  lastDelta = null;
   dbg.lastHandler = '(nothing since reset)';
   dbg.mvx = 0; dbg.mvy = 0;
   dbgEvent('stats reset');
@@ -255,16 +240,12 @@ setInterval(() => {
                   : matchMedia('(display-mode: standalone)').matches ? 'standalone (status bar shows)'
                   : 'browser tab') + (document.fullscreenElement ? ' +api' : ''),
     'input     ' + dbg.lastType + '   touchpts ' + (navigator.maxTouchPoints || 0),
-    'lock      ' + (lockActive() ? 'ON' : (lockDisabled ? 'given up' : 'off'))
-                 + '   locked moves ' + dbg.lockedMoves
-                 + '   chg ' + dbg.lockChanges + '  err ' + dbg.lockErrors,
     'handler   ' + dbg.lastHandler,
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves,
     'movement  ' + dbg.mvx + ', ' + dbg.mvy,
     'travel    ' + Math.round(dbg.travelX) + ', ' + Math.round(dbg.travelY),
     'panrange  x ' + Math.round(dbg.panMaxX - dbg.panMinX)
                    + '   y ' + Math.round(dbg.panMaxY - dbg.panMinY),
-    'warps     ' + dbg.warps + '   reversals ' + dbg.reversals,
     'drift     frames ' + dbg.driftFrames + '   starts ' + dbg.drifts
                         + '   active ' + (driftAnimId !== null ? 'YES' : 'no'),
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
@@ -365,17 +346,21 @@ drawKaleidoscope();
 
 const cursorDot = document.getElementById('cursorDot');
 
-// Movement is relative, always, whether Pointer Lock is held or not. The two
-// used to be handled differently -- deltas while locked, absolute position
-// while not -- and on this tablet the lock does not stay held, so the app kept
-// switching schemes underneath the user. Each drop left the real pointer frozen
-// wherever lock had grabbed it, and the absolute path then walked the dot back
-// onto that spot, which is the "it keeps pulling me back to where I clicked"
-// that has been chased through several builds.
+// Movement is relative: the dot moves by the difference between successive
+// pointer positions, never by the pointer's absolute position. That is what
+// makes the idle drift back to centre stick, since nothing ever maps the
+// pointer's physical location onto pan, and it is why the dot no longer gets
+// dragged back to wherever a gesture started.
 //
-// With deltas on both sides there is no absolute position to be pulled back to,
-// losing the lock changes nothing about how it feels, and the idle drift sticks
-// for free, since nothing ever maps the pointer's physical location onto pan.
+// Pointer Lock was tried repeatedly here and does not work on this device. It
+// engages, then drops on its own -- always immediately after a window blur --
+// and while held it reports movement that very largely cancels itself out: b22
+// measured 55 and 155 units of travel producing 14 and 23 units of actual
+// movement, with a filter already discarding the exactly-reversed deltas. The
+// remainder are near-reversals that no filter can separate from real input. The
+// consequence is that the real pointer cannot be confined, so it can still
+// reach the top edge of the screen and reveal the status bar. That is a
+// platform limit, not something left unfinished.
 
 function updateCursorDotPosition() {
   cursorDot.style.left = (pan.x / SRC_SIZE) * 100 + '%';
@@ -454,30 +439,16 @@ function enterFullscreenIfStandalone() {
   }
 }
 
-// Any press anywhere counts, including a finger on the touchscreen and
-// including the page around the circle. Lock needs a user gesture, and it was
-// previously asked for only on a mouse press on the stage itself -- so on a
-// kiosk, where visitors hover rather than click, it was never requested at all
-// and the pointer was never confined. A stray touch is now enough to arm it.
 function onGesture(e) {
   if (e && e.pointerType) {
     dbg.lastType = e.pointerType;
     dbgEvent('down (' + e.pointerType + ')');
   }
   enterFullscreenIfStandalone();
-  requestLockIfPossible();
 }
 
 window.addEventListener('pointerdown', onGesture);
 window.addEventListener('touchstart', onGesture, { passive: true });
-// A real mouse press is the gesture with the best chance of being allowed to
-// capture the mouse, so it gets its own attempt rather than sharing the
-// pointerdown path, where a touch may already have used up the gesture.
-window.addEventListener('mousedown', () => {
-  dbg.lastType = 'mouse';
-  dbgEvent('mousedown');
-  requestLockIfPossible();
-});
 
 // A mouse reports movement far more often than the screen refreshes (125-1000
 // Hz against 60-120 Hz), and every draw is a full repaint of the whole circle.
@@ -501,143 +472,15 @@ function requestDraw() {
   });
 }
 
-// Pointer Lock is the only thing in the platform that stops the real pointer
-// reaching the edge of the screen, where Android reveals the status bar over
-// the app. Gain alone cannot fix that -- it makes the edge hard to reach by
-// accident, not unreachable -- so lock is attempted again here, but strictly as
-// an enhancement: everything below still works when it is refused, and the
-// watchdog gives it up permanently at the first sign that it is not delivering.
-//
-// The earlier trouble with lock on this device was never tested against a
-// correct implementation, since the tablet was serving a stale build at the
-// time. If it misbehaves now, it disables itself within a fraction of a second
-// and the unlocked delta path takes over, which feels the same either way.
-const LOCK_DEAD_MOVES = 20; // all-zero deltas in a row before giving up on lock
-
-let lockDisabled = false;
-let zeroMoveStreak = 0;
-let lastClient = null; // previous pointer position, for deltas while unlocked
-let lastDelta = null;  // previous locked delta, for spotting the warp back
-
-function lockActive() {
-  return document.pointerLockElement === stage;
-}
-
-function requestLockIfPossible() {
-  if (lockDisabled || lockActive() || !stage.requestPointerLock) return;
-  try {
-    const p = stage.requestPointerLock();
-    if (p && typeof p.catch === 'function') {
-      p.catch(() => {
-        dbg.lockErrors++;
-        dbgEvent('lock refused ' + dbg.lockErrors + ' (' + dbg.lastType + ')');
-        if (dbg.lockErrors >= LOCK_ERROR_BUDGET) abandonLock('repeated refusals');
-      });
-    }
-  } catch (err) {
-    dbgEvent('lock threw');
-  }
-}
-
-function abandonLock(why) {
-  lockDisabled = true;
-  dbgEvent('lock abandoned: ' + why);
-  if (lockActive() && document.exitPointerLock) document.exitPointerLock();
-}
-
-document.addEventListener('pointerlockchange', () => {
-  dbg.lockChanges++;
-  dbgEvent('lock -> ' + (lockActive() ? 'on' : 'off'));
-  zeroMoveStreak = 0;
-  if (!lockActive()) {
-    // The unlocked path measures movement between events, so the first one
-    // after a drop has nothing to measure against and must only seed itself.
-    lastClient = null;
-    // No immediate re-request. Asking for it back the moment it dropped turned
-    // into a thrash loop -- twenty lock changes inside one short measurement --
-    // which is worse than simply being unlocked. The next real gesture will ask
-    // again, and the delta path works either way.
-  }
-});
-
-// A request made from a touch gesture fails: there is no mouse pointer to
-// capture in that context. Asking on any gesture is still right -- on a kiosk
-// nobody clicks a trackball button either -- but treating that failure as
-// final meant one finger tap disabled locking for the whole session, including
-// the tap that opens this readout. Errors are tolerated and retried now; only a
-// persistent run of them gives up.
-const LOCK_ERROR_BUDGET = 8;
-
-document.addEventListener('pointerlockerror', () => {
-  dbg.lockErrors++;
-  dbgEvent('lock error ' + dbg.lockErrors + ' (' + dbg.lastType + ')');
-  if (dbg.lockErrors >= LOCK_ERROR_BUDGET) abandonLock('repeated errors');
-});
-
-// The lock drops on its own here -- four times in eighty seconds on b17, with
-// no errors, so something is exiting it cleanly. These are the usual suspects;
-// logging them alongside the lock changes shows which one precedes a drop
-// instead of leaving it to guesswork.
-document.addEventListener('visibilitychange', () => {
-  dbgEvent('visibility ' + document.visibilityState);
-});
-document.addEventListener('fullscreenchange', () => {
-  dbgEvent('fullscreen ' + (document.fullscreenElement ? 'on' : 'off'));
-});
-window.addEventListener('blur', () => dbgEvent('window blur'));
-window.addEventListener('focus', () => dbgEvent('window focus'));
-window.addEventListener('touchstart', () => dbgEvent('touchstart'), { passive: true });
-
-// While locked, clientX/clientY are frozen, so only the deltas mean anything.
-document.addEventListener('mousemove', e => {
-  if (!lockActive()) return;
-
-  const mvx = e.movementX || 0;
-  const mvy = e.movementY || 0;
-
-  // This device warps the pointer back after each movement while locked and
-  // reports the return trip as a delta of its own, so movement annihilates
-  // itself: b21 measured 103 units of travel yielding 11 units of actual range,
-  // with nothing else touching pan. A delta that exactly negates the one before
-  // it is that return trip, not a movement, so it is dropped. Cleared
-  // afterwards so a genuine back-and-forth cannot be swallowed as a chain.
-  if (lastDelta !== null && mvx === -lastDelta.dx && mvy === -lastDelta.dy) {
-    dbg.warps++;
-    lastDelta = null;
-    return;
-  }
-  if (mvx !== 0 || mvy !== 0) {
-    if (lastDelta !== null &&
-        (mvx * lastDelta.dx < 0 || mvy * lastDelta.dy < 0)) dbg.reversals++;
-    lastDelta = { dx: mvx, dy: mvy };
-  }
-  // Some engines deliver lock without delivering deltas, which would leave the
-  // dot frozen and the app looking broken. Count the silence and bail out.
-  if (mvx === 0 && mvy === 0) {
-    dbg.zeroStreak = ++zeroMoveStreak;
-    if (zeroMoveStreak >= LOCK_DEAD_MOVES) abandonLock('no movement delivered');
-    return;
-  }
-  zeroMoveStreak = 0;
-
-  dbg.absMoves++;
-  dbg.lockedMoves++;
-  dbg.lastHandler = 'mousemove (locked)';
-  dbg.mvx = mvx; dbg.mvy = mvy;
-
-  applyPointerDelta(mvx, mvy);
-});
-
 // Listened for on window rather than the stage: the stage is a disc inside a
 // square box, so movement through its corners, or over the page around it, has
 // to count too -- otherwise the view sat still while the trackball was plainly
 // being moved.
 window.addEventListener('pointermove', e => {
-  if (lockActive()) return; // the locked handler above owns movement
   dbg.absMoves++;
   if (e.buttons) dbg.dragMoves++; else dbg.hoverMoves++;
   dbg.buttons = e.buttons;
-  dbg.lastHandler = 'pointermove (unlocked deltas)';
+  dbg.lastHandler = 'pointermove (deltas)';
   dbg.lastType = e.pointerType;
   dbg.clientX = e.clientX; dbg.clientY = e.clientY;
 
