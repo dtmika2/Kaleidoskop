@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b21';
+const BUILD = 'b22';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -193,6 +193,10 @@ const dbg = {
   // small travel means it is not arriving at all; a large range with pan back
   // near the middle means something pulls it back.
   travelX: 0, travelY: 0,
+  // warps counts deltas discarded as the pointer's return trip; reversals
+  // counts direction changes that survived. If travel and panrange come into
+  // line and warps is roughly half the locked moves, the diagnosis holds.
+  warps: 0, reversals: 0,
   panMinX: 450, panMaxX: 450,
   panMinY: 450, panMaxY: 450,
   drifts: 0,
@@ -208,6 +212,9 @@ function resetMovementStats() {
   dbg.panMinY = dbg.panMaxY = pan.y;
   dbg.lockedMoves = 0;
   dbg.hoverMoves = 0;
+  dbg.warps = 0;
+  dbg.reversals = 0;
+  lastDelta = null;
   dbg.lastHandler = '(nothing since reset)';
   dbg.mvx = 0; dbg.mvy = 0;
   dbgEvent('stats reset');
@@ -257,6 +264,7 @@ setInterval(() => {
     'travel    ' + Math.round(dbg.travelX) + ', ' + Math.round(dbg.travelY),
     'panrange  x ' + Math.round(dbg.panMaxX - dbg.panMinX)
                    + '   y ' + Math.round(dbg.panMaxY - dbg.panMinY),
+    'warps     ' + dbg.warps + '   reversals ' + dbg.reversals,
     'drift     frames ' + dbg.driftFrames + '   starts ' + dbg.drifts
                         + '   active ' + (driftAnimId !== null ? 'YES' : 'no'),
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
@@ -509,6 +517,7 @@ const LOCK_DEAD_MOVES = 20; // all-zero deltas in a row before giving up on lock
 let lockDisabled = false;
 let zeroMoveStreak = 0;
 let lastClient = null; // previous pointer position, for deltas while unlocked
+let lastDelta = null;  // previous locked delta, for spotting the warp back
 
 function lockActive() {
   return document.pointerLockElement === stage;
@@ -544,10 +553,10 @@ document.addEventListener('pointerlockchange', () => {
     // The unlocked path measures movement between events, so the first one
     // after a drop has nothing to measure against and must only seed itself.
     lastClient = null;
-    // Lock does not stay held on this device. Ask for it straight back; if the
-    // browser insists on a fresh gesture it will refuse harmlessly and the next
-    // touch will get it, with the delta path carrying on regardless.
-    requestLockIfPossible();
+    // No immediate re-request. Asking for it back the moment it dropped turned
+    // into a thrash loop -- twenty lock changes inside one short measurement --
+    // which is worse than simply being unlocked. The next real gesture will ask
+    // again, and the delta path works either way.
   }
 });
 
@@ -585,6 +594,23 @@ document.addEventListener('mousemove', e => {
 
   const mvx = e.movementX || 0;
   const mvy = e.movementY || 0;
+
+  // This device warps the pointer back after each movement while locked and
+  // reports the return trip as a delta of its own, so movement annihilates
+  // itself: b21 measured 103 units of travel yielding 11 units of actual range,
+  // with nothing else touching pan. A delta that exactly negates the one before
+  // it is that return trip, not a movement, so it is dropped. Cleared
+  // afterwards so a genuine back-and-forth cannot be swallowed as a chain.
+  if (lastDelta !== null && mvx === -lastDelta.dx && mvy === -lastDelta.dy) {
+    dbg.warps++;
+    lastDelta = null;
+    return;
+  }
+  if (mvx !== 0 || mvy !== 0) {
+    if (lastDelta !== null &&
+        (mvx * lastDelta.dx < 0 || mvy * lastDelta.dy < 0)) dbg.reversals++;
+    lastDelta = { dx: mvx, dy: mvy };
+  }
   // Some engines deliver lock without delivering deltas, which would leave the
   // dot frozen and the app looking broken. Count the silence and bail out.
   if (mvx === 0 && mvy === 0) {
