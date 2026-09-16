@@ -179,8 +179,17 @@ const stage = document.getElementById('stage');
 // tracks 100vmin, so it fills to the edges on any device/orientation) times
 // devicePixelRatio, so the render stays sharp instead of being CSS-stretched
 // from a fixed small bitmap.
+// Each frame repaints SLICES full-size wedges of a tiled 900x900 pattern, so
+// cost grows with the square of this number. Uncapped, an installed PWA on a
+// high-DPI screen asks for a ~2000px canvas -- standalone has no tab strip or
+// URL bar, so 94vmin is larger than in a tab -- and the repaint could not keep
+// up with the mouse. Capping trades sharpness nobody can see for a frame rate
+// the pointer can ride on.
+const MAX_CANVAS_PX = 1400;
+
 function resizeCanvas() {
-  const size = Math.round(stage.clientWidth * (window.devicePixelRatio || 1));
+  const dpr = window.devicePixelRatio || 1;
+  const size = Math.min(MAX_CANVAS_PX, Math.round(stage.clientWidth * dpr));
   if (size > 0 && canvas.width !== size) {
     canvas.width = size;
     canvas.height = size;
@@ -252,10 +261,35 @@ document.addEventListener('pointerlockerror', () => {
   pointerLocked = false;
 });
 
+// A mouse reports movement far more often than the screen refreshes (125-1000
+// Hz against 60-120 Hz), and every draw is a full repaint of the whole circle.
+// Drawing straight from the event handler meant several full repaints per
+// displayed frame, so the input queue fell behind and the dot moved in jerks --
+// worst in the installed PWA, where the canvas is largest. The handler now only
+// updates pan and asks for a single draw per animation frame.
+let drawFrameId = null;
+
+function renderNow() {
+  drawKaleidoscope();
+  updateMatch();
+  updateCursorDotPosition();
+}
+
+function requestDraw() {
+  if (drawFrameId !== null) return;
+  drawFrameId = requestAnimationFrame(() => {
+    drawFrameId = null;
+    renderNow();
+  });
+}
+
 stage.addEventListener('pointermove', e => {
   cancelDrift(); // a real pointer position always wins over the idle drift
+  noteActivity();
   const rect = stage.getBoundingClientRect();
   if (pointerLocked) {
+    // Deltas are summed on every event, including ones no draw follows --
+    // skipping any would lose that movement instead of merely deferring it.
     pan.x += e.movementX * (SRC_SIZE / rect.width);
     pan.y += e.movementY * (SRC_SIZE / rect.height);
   } else {
@@ -264,21 +298,20 @@ stage.addEventListener('pointermove', e => {
     pan.x = nx * SRC_SIZE;
     pan.y = ny * SRC_SIZE;
   }
-  clampPanToCircle();
-  drawKaleidoscope();
-  updateMatch();
-  updateCursorDotPosition();
-  scheduleIdleReset();
+  clampPanToCircle(); // per event, so summed deltas cannot run up a debt past the rim
+  requestDraw();
 });
 
-// After 5s with no pointer movement, glide back to the center over time
+// After 20s with no pointer activity, glide back to the center over time
 // (rather than snapping instantly) so the reset is visible as motion -- the
 // next visitor sees the pattern actually settled at center, not just an
 // image that happens to reset the moment they touch it.
-const IDLE_RESET_MS = 5000; // TODO: testing value, restore to 20000 before shipping
+const IDLE_RESET_MS = 20000;
+const IDLE_CHECK_MS = 500;
 const DRIFT_DURATION_MS = 1400;
-let idleTimer = null;
 let driftAnimId = null;
+let lastActivityAt = performance.now();
+let driftedSinceActivity = false;
 
 function cancelDrift() {
   if (driftAnimId !== null) {
@@ -301,9 +334,7 @@ function driftToCenter() {
     const e = easeInOutQuad(t);
     pan.x = startX + (targetX - startX) * e;
     pan.y = startY + (targetY - startY) * e;
-    drawKaleidoscope();
-    updateMatch();
-    updateCursorDotPosition();
+    renderNow();
     if (t < 1) {
       driftAnimId = requestAnimationFrame(step);
     } else {
@@ -313,11 +344,28 @@ function driftToCenter() {
   driftAnimId = requestAnimationFrame(step);
 }
 
-function scheduleIdleReset() {
-  clearTimeout(idleTimer);
-  idleTimer = setTimeout(driftToCenter, IDLE_RESET_MS);
+// Idleness is measured against a timestamp polled twice a second, rather than a
+// timeout torn down and recreated on every single pointer event.
+function noteActivity() {
+  lastActivityAt = performance.now();
+  driftedSinceActivity = false;
 }
-scheduleIdleReset();
+
+// Any pointer activity in the window counts, not only movement over the circle.
+// The stage is a disc inside a square box, so passing through its corners -- or
+// over the page around it -- fired no stage pointermove at all, and the view
+// would drift back to center while the user was still moving the mouse.
+['pointermove', 'pointerdown', 'wheel', 'keydown'].forEach(type => {
+  window.addEventListener(type, noteActivity, { passive: true });
+});
+
+setInterval(() => {
+  if (driftedSinceActivity || driftAnimId !== null) return;
+  if (performance.now() - lastActivityAt >= IDLE_RESET_MS) {
+    driftedSinceActivity = true; // one drift per idle stretch, not one per check
+    driftToCenter();
+  }
+}, IDLE_CHECK_MS);
 
 /* ---------- 4. Pattern matching: drives the ring's color/glow and the hidden word ---------- */
 const PATTERNS = [

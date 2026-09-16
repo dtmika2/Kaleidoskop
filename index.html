@@ -387,7 +387,7 @@ stage.addEventListener('pointermove', e => {
 // (rather than snapping instantly) so the reset is visible as motion -- the
 // next visitor sees the pattern actually settled at center, not just an
 // image that happens to reset the moment they touch it.
-const IDLE_RESET_MS = 5000; // TODO: testing value, restore to 20000 before shipping
+const IDLE_RESET_MS = 20000;
 const DRIFT_DURATION_MS = 1400;
 let idleTimer = null;
 let driftAnimId = null;
