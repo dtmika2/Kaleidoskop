@@ -82,16 +82,20 @@
     right: 0;
     bottom: 0;
     z-index: 10;
-    padding: 14px 16px;
-    font: 11px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
-    color: rgba(255,255,255,0.28);
+    margin: 10px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: rgba(0,0,0,0.55);
+    font: 13px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color: rgba(255,255,255,0.8);
     letter-spacing: 0.5px;
+
     user-select: none;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
     cursor: pointer;
   }
-  .build-badge.on { color: rgba(255,255,255,0.75); }
+  .build-badge.on { color: #ff8a3d; background: rgba(0,0,0,0.8); }
 
 
   /* Diagnostics for the pointer-lock behaviour; toggled by tapping the badge. */
@@ -159,7 +163,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b10';
+const BUILD = 'b11';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -634,8 +638,29 @@ function updateMatch() {
 updateMatch();
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+  // updateViaCache: 'none' stops the browser serving sw.js itself out of its
+  // HTTP cache, which is what let a stale worker survive repeated relaunches.
+  // update() then forces a check on every launch rather than waiting for the
+  // browser's own schedule -- this runs as a kiosk, so it is never reloaded by
+  // hand and would otherwise sit on one build indefinitely.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloadedForUpdate = false;
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // A new worker took over, so the page now in front of us is the old one.
+    // Only on an update, never on the first install, which would loop.
+    if (!hadController || reloadedForUpdate) return;
+    reloadedForUpdate = true;
+    location.reload();
+  });
+
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+      .then(reg => reg.update())
+      .catch(() => {});
+  });
 }
+
 </script>
 </body>
 </html>

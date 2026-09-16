@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kaleidoskop-v9';
+const CACHE_NAME = 'kaleidoskop-v10';
 const PRECACHE_URLS = [
   'circle.html',
   'install/index.html',
@@ -11,10 +11,18 @@ const PRECACHE_URLS = [
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(PRECACHE_URLS))
+      // {cache: 'reload'} skips the browser's own HTTP cache. Without it a
+      // freshly installed worker can precache a copy that is already stale --
+      // GitHub Pages serves these with a max-age of several minutes -- so the
+      // app kept coming up on old code no matter how long you waited after a
+      // push, and a new build was undetectable from inside it.
+      .then(cache => cache.addAll(
+        PRECACHE_URLS.map(url => new Request(url, { cache: 'reload' }))
+      ))
       .then(() => self.skipWaiting())
   );
 });
+
 
 self.addEventListener('activate', event => {
   event.waitUntil(
@@ -36,8 +44,12 @@ self.addEventListener('fetch', event => {
   // Falls back to the cached copy when offline.
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request)
+      // By URL with no-store rather than passing the Request through: a
+      // navigation Request carries the HTTP cache mode the browser chose, and
+      // that is exactly what has to be bypassed here.
+      fetch(event.request.url, { cache: 'no-store' })
         .then(response => {
+
           if (response.ok) {
             const copy = response.clone();
             caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
