@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b18';
+const BUILD = 'b19';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -411,12 +411,22 @@ function enterFullscreenIfStandalone() {
   }
 }
 
-stage.addEventListener('pointerdown', e => {
-  dbg.lastType = e.pointerType;
-  dbgEvent('down (' + e.pointerType + ')');
+// Any press anywhere counts, including a finger on the touchscreen and
+// including the page around the circle. Lock needs a user gesture, and it was
+// previously asked for only on a mouse press on the stage itself -- so on a
+// kiosk, where visitors hover rather than click, it was never requested at all
+// and the pointer was never confined. A stray touch is now enough to arm it.
+function onGesture(e) {
+  if (e && e.pointerType) {
+    dbg.lastType = e.pointerType;
+    dbgEvent('down (' + e.pointerType + ')');
+  }
   enterFullscreenIfStandalone();
-  if (e.pointerType === 'mouse') requestLockIfPossible();
-});
+  requestLockIfPossible();
+}
+
+window.addEventListener('pointerdown', onGesture);
+window.addEventListener('touchstart', onGesture, { passive: true });
 
 // A mouse reports movement far more often than the screen refreshes (125-1000
 // Hz against 60-120 Hz), and every draw is a full repaint of the whole circle.
@@ -496,6 +506,20 @@ document.addEventListener('pointerlockerror', () => {
   dbg.lockErrors++;
   abandonLock('error');
 });
+
+// The lock drops on its own here -- four times in eighty seconds on b17, with
+// no errors, so something is exiting it cleanly. These are the usual suspects;
+// logging them alongside the lock changes shows which one precedes a drop
+// instead of leaving it to guesswork.
+document.addEventListener('visibilitychange', () => {
+  dbgEvent('visibility ' + document.visibilityState);
+});
+document.addEventListener('fullscreenchange', () => {
+  dbgEvent('fullscreen ' + (document.fullscreenElement ? 'on' : 'off'));
+});
+window.addEventListener('blur', () => dbgEvent('window blur'));
+window.addEventListener('focus', () => dbgEvent('window focus'));
+window.addEventListener('touchstart', () => dbgEvent('touchstart'), { passive: true });
 
 // While locked, clientX/clientY are frozen, so only the deltas mean anything.
 document.addEventListener('mousemove', e => {
