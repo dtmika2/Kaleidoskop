@@ -21,7 +21,7 @@
   }
   body {
     /* The dot replaces the pointer entirely. Two cursors on screen, one of them
-       lagging the other by the anchor offset, reads as a bug. */
+       lagging the other, reads as a bug. */
     cursor: none;
     background: var(--bg);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b17';
+const BUILD = 'b18';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -233,8 +233,6 @@ setInterval(() => {
     'drift     frames ' + dbg.driftFrames + '   starts ' + dbg.drifts
                         + '   active ' + (driftAnimId !== null ? 'YES' : 'no'),
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
-    'base      ' + Math.round(lastBase.x) + ', ' + Math.round(lastBase.y),
-    'anchor    ' + Math.round(anchor.x) + ', ' + Math.round(anchor.y),
     'pan       ' + Math.round(pan.x) + ', ' + Math.round(pan.y),
     'drifts    ' + dbg.drifts,
     '',
@@ -332,31 +330,17 @@ drawKaleidoscope();
 
 const cursorDot = document.getElementById('cursorDot');
 
-// Two things have to hold at once: the cursor stays inside the circle, and a
-// drift back to center is not undone by the next movement. Pointer Lock used to
-// buy the second one by switching to movement deltas, but it is unreliable on
-// an Android tablet and absent entirely under Fully Kiosk, so it is gone. The
-// only input used now is the ordinary pointer position -- the path already
-// known to work on the device.
+// Movement is relative, always, whether Pointer Lock is held or not. The two
+// used to be handled differently -- deltas while locked, absolute position
+// while not -- and on this tablet the lock does not stay held, so the app kept
+// switching schemes underneath the user. Each drop left the real pointer frozen
+// wherever lock had grabbed it, and the absolute path then walked the dot back
+// onto that spot, which is the "it keeps pulling me back to where I clicked"
+// that has been chased through several builds.
 //
-//   pan = (pointer mapped onto the stage) + anchor, clamped to the circle
-//
-// The anchor is what makes a drift stick. No web API can relocate the pointer,
-// so rather than moving it, the mapping moves under it: while the view glides
-// to center, the anchor is held equal to (pan - pointer), so at every instant
-// the pointer's current physical spot already means wherever the view now sits.
-// Whether the drift finishes or someone grabs the trackball halfway through,
-// movement resumes from there with nothing to jump.
-//
-// The anchor then washes out in proportion to how far the pointer travels. A
-// permanent offset would put part of the circle out of reach, since the pointer
-// cannot leave the screen to make up the difference -- so it decays over about
-// a circle and a half of travel, restoring full reach within a sweep or two, by
-// which time the drift it was covering for is long past.
-const ANCHOR_WASH_DISTANCE = SRC_SIZE * 1.5;
-
-let anchor = { x: 0, y: 0 };
-let lastBase = { x: SRC_SIZE / 2, y: SRC_SIZE / 2 }; // last pointer pos, stage coords
+// With deltas on both sides there is no absolute position to be pulled back to,
+// losing the lock changes nothing about how it feels, and the idle drift sticks
+// for free, since nothing ever maps the pointer's physical location onto pan.
 
 function updateCursorDotPosition() {
   cursorDot.style.left = (pan.x / SRC_SIZE) * 100 + '%';
@@ -375,17 +359,17 @@ function updateCursorDotPosition() {
 // no reason to go there.
 const POINTER_GAIN = 1.6;
 
-// Coordinates outside the stage map outside 0..SRC_SIZE quite happily; they get
-// clamped back onto the circle afterwards.
-function baseFromEvent(e) {
+// The one place pan is moved by the pointer. dx/dy arrive in CSS pixels and are
+// converted to source units through the stage's current size, so sensitivity
+// stays the same whatever the screen.
+function applyPointerDelta(dx, dy) {
   const rect = stage.getBoundingClientRect();
-  const half = SRC_SIZE / 2;
-  const x = ((e.clientX - rect.left) / rect.width) * SRC_SIZE;
-  const y = ((e.clientY - rect.top) / rect.height) * SRC_SIZE;
-  return {
-    x: half + (x - half) * POINTER_GAIN, // scaled about the circle's center, so
-    y: half + (y - half) * POINTER_GAIN, // the middle still maps to the middle
-  };
+  pan.x += dx * (SRC_SIZE / rect.width) * POINTER_GAIN;
+  pan.y += dy * (SRC_SIZE / rect.height) * POINTER_GAIN;
+  cancelDrift(); // a real movement always wins over the idle drift
+  noteActivity();
+  clampPanToCircle();
+  requestDraw();
 }
 
 // The stage is a circle inscribed in its square bounding box, so the movable
@@ -466,12 +450,12 @@ function requestDraw() {
 // The earlier trouble with lock on this device was never tested against a
 // correct implementation, since the tablet was serving a stale build at the
 // time. If it misbehaves now, it disables itself within a fraction of a second
-// and the anchored path takes over, which is exactly the behaviour of b15.
+// and the unlocked delta path takes over, which feels the same either way.
 const LOCK_DEAD_MOVES = 20; // all-zero deltas in a row before giving up on lock
 
 let lockDisabled = false;
 let zeroMoveStreak = 0;
-let reanchorOnNextMove = false;
+let lastClient = null; // previous pointer position, for deltas while unlocked
 
 function lockActive() {
   return document.pointerLockElement === stage;
@@ -497,10 +481,15 @@ document.addEventListener('pointerlockchange', () => {
   dbg.lockChanges++;
   dbgEvent('lock -> ' + (lockActive() ? 'on' : 'off'));
   zeroMoveStreak = 0;
-  // Coming out of lock, the pointer's real position is somewhere unrelated to
-  // where the dot is. Re-anchor on the next movement instead of letting the
-  // absolute mapping snap the dot across to it.
-  if (!lockActive()) reanchorOnNextMove = true;
+  if (!lockActive()) {
+    // The unlocked path measures movement between events, so the first one
+    // after a drop has nothing to measure against and must only seed itself.
+    lastClient = null;
+    // Lock does not stay held on this device. Ask for it straight back; if the
+    // browser insists on a fresh gesture it will refuse harmlessly and the next
+    // touch will get it, with the delta path carrying on regardless.
+    requestLockIfPossible();
+  }
 });
 
 document.addEventListener('pointerlockerror', () => {
@@ -528,14 +517,7 @@ document.addEventListener('mousemove', e => {
   dbg.lastHandler = 'mousemove (locked)';
   dbg.mvx = mvx; dbg.mvy = mvy;
 
-  const rect = stage.getBoundingClientRect();
-  pan.x += mvx * (SRC_SIZE / rect.width) * POINTER_GAIN;
-  pan.y += mvy * (SRC_SIZE / rect.height) * POINTER_GAIN;
-
-  cancelDrift();
-  noteActivity();
-  clampPanToCircle();
-  requestDraw();
+  applyPointerDelta(mvx, mvy);
 });
 
 // Listened for on window rather than the stage: the stage is a disc inside a
@@ -547,36 +529,22 @@ window.addEventListener('pointermove', e => {
   dbg.absMoves++;
   if (e.buttons) dbg.dragMoves++; else dbg.hoverMoves++;
   dbg.buttons = e.buttons;
-  dbg.lastHandler = 'pointermove (anchored)';
+  dbg.lastHandler = 'pointermove (unlocked deltas)';
   dbg.lastType = e.pointerType;
   dbg.clientX = e.clientX; dbg.clientY = e.clientY;
 
-  const base = baseFromEvent(e);
-  if (reanchorOnNextMove) {
-    // First real position since lock ended: make it mean where the dot already
-    // is, so control resumes from there rather than teleporting.
-    reanchorOnNextMove = false;
-    anchor.x = pan.x - base.x;
-    anchor.y = pan.y - base.y;
-    lastBase = base;
+  // Without the lock the browser gives no deltas, so they are measured between
+  // events. A first event after load or after a drop only seeds the reference.
+  if (lastClient === null) {
+    lastClient = { x: e.clientX, y: e.clientY };
+    return;
   }
-  const travel = Math.hypot(base.x - lastBase.x, base.y - lastBase.y);
-  lastBase = base;
+  const dx = e.clientX - lastClient.x;
+  const dy = e.clientY - lastClient.y;
+  lastClient = { x: e.clientX, y: e.clientY };
+  dbg.mvx = dx; dbg.mvy = dy;
 
-  // Wash the anchor out by how far the pointer actually moved, so it fades with
-  // use rather than on a clock: someone standing still never has the view slide
-  // out from under them.
-  const keep = Math.max(0, 1 - travel / ANCHOR_WASH_DISTANCE);
-  anchor.x *= keep;
-  anchor.y *= keep;
-
-  pan.x = base.x + anchor.x;
-  pan.y = base.y + anchor.y;
-
-  cancelDrift(); // a real movement always wins over the idle drift
-  noteActivity();
-  clampPanToCircle();
-  requestDraw();
+  applyPointerDelta(dx, dy);
 });
 
 // After 20s with no pointer activity, glide back to the center over time
@@ -613,11 +581,6 @@ function driftToCenter() {
     const e = easeInOutQuad(t);
     pan.x = startX + (targetX - startX) * e;
     pan.y = startY + (targetY - startY) * e;
-    // Re-anchored every frame, not just at the end: the drift can be
-    // interrupted at any point, and this way the pointer's physical spot
-    // already means "here" whenever movement resumes.
-    anchor.x = pan.x - lastBase.x;
-    anchor.y = pan.y - lastBase.y;
     // Named in the readout because this loop overwrites pan on every frame; if
     // it is running when it should not be, it looks exactly like movement being
     // dragged back to a fixed point.
