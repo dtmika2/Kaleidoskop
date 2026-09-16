@@ -166,7 +166,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b13';
+const BUILD = 'b14';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -214,7 +214,9 @@ setInterval(() => {
   if (!debugVisible) return;
   debugPanel.textContent = [
     'build     ' + BUILD,
-    'display   ' + (matchMedia('(display-mode: standalone)').matches ? 'standalone (PWA)' : 'browser tab'),
+    'display   ' + (matchMedia('(display-mode: fullscreen)').matches ? 'fullscreen'
+                  : matchMedia('(display-mode: standalone)').matches ? 'standalone (status bar shows)'
+                  : 'browser tab') + (document.fullscreenElement ? ' +api' : ''),
     'input     ' + dbg.lastType + '   touchpts ' + (navigator.maxTouchPoints || 0),
     'handler   ' + dbg.lastHandler,
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves,
@@ -377,9 +379,32 @@ function clampPanToCircle() {
   }
 }
 
+// The status bar is the only thing kiosk mode was wanted for, and the manifest
+// now asks for display: fullscreen, which hides it on Android. If the installed
+// app came up merely standalone -- an older install still carrying the previous
+// manifest, say -- the Fullscreen API gets the same result, but only from
+// inside a user gesture, so the first touch is where it has to be asked for.
+// Never attempted in a browser tab, where taking over the screen unasked would
+// be obnoxious.
+function enterFullscreenIfStandalone() {
+  if (!matchMedia('(display-mode: standalone)').matches) return;
+  if (document.fullscreenElement) return;
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!req) return;
+  try {
+    const p = req.call(el, { navigationUI: 'hide' });
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+    dbgEvent('fullscreen requested');
+  } catch (err) {
+    dbgEvent('fullscreen failed');
+  }
+}
+
 stage.addEventListener('pointerdown', e => {
   dbg.lastType = e.pointerType;
   dbgEvent('down (' + e.pointerType + ')');
+  enterFullscreenIfStandalone();
 });
 
 // A mouse reports movement far more often than the screen refreshes (125-1000

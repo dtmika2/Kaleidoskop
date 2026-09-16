@@ -5,7 +5,8 @@
   "description": "Interaktivní kaleidoskop se čtyřmi skrytými elementárními vzory.",
   "start_url": "circle.html",
   "scope": "./",
-  "display": "standalone",
+  "display_override": ["fullscreen", "standalone"],
+  "display": "fullscreen",
   "background_color": "#12141a",
   "theme_color": "#12141a",
   "icons": [
