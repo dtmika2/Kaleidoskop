@@ -74,19 +74,27 @@
 
   /* Build stamp. The service worker can serve a page from cache, so "is the
      fix even running?" is otherwise unanswerable from inside the app. */
+  /* Tapping the badge toggles the readout: there is no keyboard on a tablet,
+     which is where this actually needs to be read. Padded out to a finger-sized
+     target, sitting outside .stage-wrap so it never reaches the stage. */
   .build-badge {
     position: fixed;
-    right: 8px;
-    bottom: 6px;
+    right: 0;
+    bottom: 0;
     z-index: 10;
+    padding: 14px 16px;
     font: 11px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
     color: rgba(255,255,255,0.28);
     letter-spacing: 0.5px;
-    pointer-events: none;
     user-select: none;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    cursor: pointer;
   }
+  .build-badge.on { color: rgba(255,255,255,0.75); }
 
-  /* Diagnostics for the pointer-lock behaviour; toggled with the D key. */
+
+  /* Diagnostics for the pointer-lock behaviour; toggled by tapping the badge. */
   .debug-panel {
     position: fixed;
     left: 8px;
@@ -94,11 +102,12 @@
     z-index: 10;
     margin: 0;
     padding: 8px 10px;
-    max-width: 46vw;
+    max-width: 92vw;
     border-radius: 6px;
-    background: rgba(0,0,0,0.78);
+    background: rgba(0,0,0,0.86);
     color: #bfe6c0;
-    font: 11px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+
     white-space: pre;
     pointer-events: none;
     user-select: none;
@@ -150,7 +159,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b9';
+const BUILD = 'b10';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -162,10 +171,12 @@ const dbg = {
   absMoves: 0,
   drifts: 0,
   lastHandler: '-',
+  lastType: '-',       // pointerType of the last move: mouse, touch or pen
   mvx: 0, mvy: 0,
   clientX: 0, clientY: 0,
   events: [],
 };
+
 
 function dbgEvent(text) {
   dbg.events.unshift(Math.round(performance.now() / 100) / 10 + 's ' + text);
@@ -173,13 +184,21 @@ function dbgEvent(text) {
 }
 
 const debugPanel = document.getElementById('debugPanel');
+const buildBadge = document.getElementById('buildBadge');
 let debugVisible = false;
 
-window.addEventListener('keydown', e => {
-  if (e.key !== 'd' && e.key !== 'D') return;
+function toggleDebug() {
   debugVisible = !debugVisible;
   debugPanel.style.display = debugVisible ? 'block' : 'none';
+  buildBadge.classList.toggle('on', debugVisible);
+}
+
+// Tap the badge (tablet) or press D (desktop).
+buildBadge.addEventListener('click', toggleDebug);
+window.addEventListener('keydown', e => {
+  if (e.key === 'd' || e.key === 'D') toggleDebug();
 });
+
 
 function lockElName() {
   const el = document.pointerLockElement;
@@ -190,8 +209,11 @@ setInterval(() => {
   if (!debugVisible) return;
   debugPanel.textContent = [
     'build     ' + BUILD,
+    'display   ' + (matchMedia('(display-mode: standalone)').matches ? 'standalone (PWA)' : 'browser tab'),
+    'input     ' + dbg.lastType + '   touchpts ' + (navigator.maxTouchPoints || 0),
     'lockEl    ' + lockElName() + '   changes ' + dbg.lockChanges + '  err ' + dbg.lockErrors,
     'handler   ' + dbg.lastHandler,
+
     'moves     locked ' + dbg.lockedMoves + '   absolute ' + dbg.absMoves,
     'movement  ' + dbg.mvx + ', ' + dbg.mvy,
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
@@ -330,7 +352,10 @@ function clampPanToCircle() {
 }
 
 stage.addEventListener('pointerdown', e => {
+  dbg.lastType = e.pointerType;
+  dbgEvent('down (' + e.pointerType + ')');
   if (e.pointerType === 'mouse' && document.pointerLockElement !== stage) {
+
     const req = stage.requestPointerLock();
     if (req && typeof req.catch === 'function') req.catch(() => {});
   }
@@ -415,6 +440,8 @@ stage.addEventListener('pointermove', e => {
   if (document.pointerLockElement === stage) return; // mousemove above owns this
   dbg.absMoves++;
   dbg.lastHandler = 'pointermove (absolute)';
+  dbg.lastType = e.pointerType;
+
   dbg.mvx = e.movementX; dbg.mvy = e.movementY;
   dbg.clientX = e.clientX; dbg.clientY = e.clientY;
   const rect = stage.getBoundingClientRect();
