@@ -167,13 +167,16 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b25';
+const BUILD = 'b26';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
 // the pointer is locked, and whether the lock is actually holding.
 const dbg = {
   absMoves: 0,
+  hoverMoves: 0,
+  dragMoves: 0,
+  buttons: 0,
   drifts: 0,
   lastHandler: '-',
   lastType: '-',       // pointerType of the last move: mouse, touch or pen
@@ -209,11 +212,14 @@ setInterval(() => {
   if (!debugVisible) return;
   debugPanel.textContent = [
     'build     ' + BUILD,
-    'display   ' + (matchMedia('(display-mode: standalone)').matches ? 'standalone (PWA)' : 'browser tab'),
+    'display   ' + (matchMedia('(display-mode: fullscreen)').matches ? 'fullscreen'
+                  : matchMedia('(display-mode: standalone)').matches ? 'standalone (bars show)'
+                  : 'browser tab') + (document.fullscreenElement ? ' +api' : ''),
     'input     ' + dbg.lastType + '   touchpts ' + (navigator.maxTouchPoints || 0),
     'handler   ' + dbg.lastHandler,
 
-    'moves     ' + dbg.absMoves,
+    'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves + '   buttons ' + dbg.buttons,
+    'anchor    ' + Math.round(anchor.x) + ', ' + Math.round(anchor.y) + '   cap ' + Math.round(MAX_ANCHOR),
     'movement  ' + dbg.mvx + ', ' + dbg.mvy,
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
     'pan       ' + Math.round(pan.x) + ', ' + Math.round(pan.y),
@@ -318,9 +324,8 @@ const cursorDot = document.getElementById('cursorDot');
 // delivered under it cancels out. Without it the OS cursor cannot be relocated
 // by the app, so the idle drift to center is undone by the next real movement
 // landing back at the pointer's old physical spot. That is a real cost, and it
-// is the one b12's anchor was invented to cover -- but the anchor put part of
-// the rim out of reach, which is worse. Absolute mapping, plainly, is what is
-// left standing.
+// is the one b12's anchor was invented to cover. The anchor is back below,
+// capped this time so it cannot put the rim out of reach.
 //
 // cursorDot existed to stand in for the OS cursor while the lock hid it. With
 // nothing hiding it, the styled CSS cursor is the indicator and the dot is
@@ -333,6 +338,66 @@ function updateCursorDotPosition() {
 
 function applyCssCursor(hex) {
   stage.style.cursor = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='6' fill='${encodeURIComponent(hex)}' stroke='%23000000' stroke-opacity='0.55' stroke-width='1.5'/></svg>") 10 10, pointer`;
+}
+
+// Gain keeps the real pointer away from the edges of the screen. The circle is
+// 94vmin, so on a landscape tablet it is 94% of the screen height, and mapping
+// it 1:1 meant reaching the top of the circle required the pointer to be within
+// a few percent of the top of the screen -- far enough into Android's reveal
+// zone to pull the system bars down over the app. At a gain of 1.6 the pointer
+// covers the whole circle from within the middle ~62% of the screen.
+const POINTER_GAIN = 1.6;
+
+// The anchor is what makes a drift stick. No web API can relocate the real
+// pointer, so rather than moving it, the mapping moves under it: while the view
+// glides to center, the anchor is held equal to (pan - pointer), so at every
+// instant the pointer's physical spot already means wherever the view now sits.
+// Whether the drift finishes or someone grabs the trackball halfway through,
+// movement resumes from there with nothing to jump.
+//
+// Uncapped -- as it was from b12 to b18 -- that is precisely what put part of
+// the rim out of reach: with an offset in force the pointer would have to leave
+// the screen to make up the difference, so pushing straight at one side stopped
+// short, while coming at the same spot indirectly (which washed the anchor out
+// on the way) arrived. The fault was never the re-anchoring; it was that
+// nothing bounded it.
+//
+// The gain is what pays for it. Mapped at gain G about the center, the
+// pointer's physical range covers pan from half*(1-G) to half*(1+G), which
+// overshoots the circle by SRC_SIZE*(G-1)/2 on each side. That overshoot is
+// exactly the headroom an offset can be made up from, so an anchor capped to it
+// can always be pushed through, and an anchor larger than it never can. At
+// gain 1.6 that is 30% of the circle's width -- well over what a drift needs.
+const MAX_ANCHOR = SRC_SIZE * (POINTER_GAIN - 1) / 2;
+
+// It washes out with travel as well, so the offset fades with use rather than
+// on a clock: someone standing still never has the view slide out from under
+// them, and a sweep or two clears it entirely.
+const ANCHOR_WASH_DISTANCE = SRC_SIZE * 1.5;
+
+let anchor = { x: 0, y: 0 };
+let lastBase = { x: SRC_SIZE / 2, y: SRC_SIZE / 2 }; // last pointer pos, stage coords
+
+// Coordinates outside the stage map outside 0..SRC_SIZE quite happily; they get
+// clamped back onto the circle afterwards.
+function baseFromEvent(e) {
+  const rect = stage.getBoundingClientRect();
+  const half = SRC_SIZE / 2;
+  const x = ((e.clientX - rect.left) / rect.width) * SRC_SIZE;
+  const y = ((e.clientY - rect.top) / rect.height) * SRC_SIZE;
+  return {
+    x: half + (x - half) * POINTER_GAIN, // scaled about the circle's center, so
+    y: half + (y - half) * POINTER_GAIN, // the middle still maps to the middle
+  };
+}
+
+function capAnchor() {
+  const dist = Math.hypot(anchor.x, anchor.y);
+  if (dist > MAX_ANCHOR) {
+    const scale = MAX_ANCHOR / dist;
+    anchor.x *= scale;
+    anchor.y *= scale;
+  }
 }
 
 // The stage is a circle inscribed in its square bounding box, so the movable
@@ -355,9 +420,30 @@ function clampPanToCircle() {
 // On window for the same reason, and because a press that lands outside the
 // box otherwise left the readout showing "input -" with no way to tell a
 // dead device from an unlistened corner of the page.
+// The manifest asks for display: fullscreen, which hides Android's bars. An
+// install still carrying an older manifest comes up merely standalone, and for
+// that the Fullscreen API gets to the same place -- but only from inside a user
+// gesture, so the first press is where it has to be asked for. Never attempted
+// in a browser tab, where taking the whole screen unasked would be obnoxious.
+function enterFullscreenIfStandalone() {
+  if (!matchMedia('(display-mode: standalone)').matches) return;
+  if (document.fullscreenElement) return;
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!req) return;
+  try {
+    const p = req.call(el, { navigationUI: 'hide' });
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+    dbgEvent('fullscreen requested');
+  } catch (err) {
+    dbgEvent('fullscreen failed');
+  }
+}
+
 window.addEventListener('pointerdown', e => {
   dbg.lastType = e.pointerType;
   dbgEvent('down (' + e.pointerType + ')');
+  enterFullscreenIfStandalone();
 });
 
 
@@ -401,16 +487,24 @@ function trackMove() {
 // happily; clampPanToCircle puts them back on the rim afterwards.
 window.addEventListener('pointermove', e => {
   dbg.absMoves++;
-  dbg.lastHandler = 'pointermove (absolute)';
+  if (e.buttons) dbg.dragMoves++; else dbg.hoverMoves++;
+  dbg.buttons = e.buttons;
+  dbg.lastHandler = 'pointermove (anchored)';
   dbg.lastType = e.pointerType;
 
   dbg.mvx = e.movementX; dbg.mvy = e.movementY;
   dbg.clientX = e.clientX; dbg.clientY = e.clientY;
-  const rect = stage.getBoundingClientRect();
-  const nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
-  const ny = (e.clientY - rect.top) / rect.height;
-  pan.x = nx * SRC_SIZE;
-  pan.y = ny * SRC_SIZE;
+
+  const base = baseFromEvent(e);
+  const travel = Math.hypot(base.x - lastBase.x, base.y - lastBase.y);
+  lastBase = base;
+
+  const keep = Math.max(0, 1 - travel / ANCHOR_WASH_DISTANCE);
+  anchor.x *= keep;
+  anchor.y *= keep;
+
+  pan.x = base.x + anchor.x;
+  pan.y = base.y + anchor.y;
   trackMove();
 });
 
@@ -448,6 +542,13 @@ function driftToCenter() {
     const e = easeInOutQuad(t);
     pan.x = startX + (targetX - startX) * e;
     pan.y = startY + (targetY - startY) * e;
+    // Re-anchored every frame, not just at the end: the drift can be
+    // interrupted at any point, and this way the pointer's physical spot
+    // already means "here" whenever movement resumes. Capped on the spot, so
+    // the rim it points away from stays within the pointer's reach.
+    anchor.x = pan.x - lastBase.x;
+    anchor.y = pan.y - lastBase.y;
+    capAnchor();
     renderNow();
     if (t < 1) {
       driftAnimId = requestAnimationFrame(step);
