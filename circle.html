@@ -56,7 +56,11 @@
 
   /* Virtual cursor shown while the pointer is locked (see pointer-lock JS) --
      the real OS cursor is hidden then, so this dot is the only visual cursor. */
+  /* Only ever needed as a stand-in for an OS cursor hidden by Pointer Lock.
+     Nothing hides it now, so the dot would sit alongside the real cursor and
+     disagree with it after a drift. */
   .cursor-dot {
+    display: none;
     position: absolute;
     left: 50%;
     top: 50%;
@@ -163,15 +167,12 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b11';
+const BUILD = 'b25';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
 // the pointer is locked, and whether the lock is actually holding.
 const dbg = {
-  lockChanges: 0,
-  lockErrors: 0,
-  lockedMoves: 0,
   absMoves: 0,
   drifts: 0,
   lastHandler: '-',
@@ -204,21 +205,15 @@ window.addEventListener('keydown', e => {
 });
 
 
-function lockElName() {
-  const el = document.pointerLockElement;
-  return el ? (el.id || el.tagName) : 'null';
-}
-
 setInterval(() => {
   if (!debugVisible) return;
   debugPanel.textContent = [
     'build     ' + BUILD,
     'display   ' + (matchMedia('(display-mode: standalone)').matches ? 'standalone (PWA)' : 'browser tab'),
     'input     ' + dbg.lastType + '   touchpts ' + (navigator.maxTouchPoints || 0),
-    'lockEl    ' + lockElName() + '   changes ' + dbg.lockChanges + '  err ' + dbg.lockErrors,
     'handler   ' + dbg.lastHandler,
 
-    'moves     locked ' + dbg.lockedMoves + '   absolute ' + dbg.absMoves,
+    'moves     ' + dbg.absMoves,
     'movement  ' + dbg.mvx + ', ' + dbg.mvy,
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
     'pan       ' + Math.round(pan.x) + ', ' + Math.round(pan.y),
@@ -318,16 +313,18 @@ drawKaleidoscope();
 
 const cursorDot = document.getElementById('cursorDot');
 
-// Pointer Lock: an absolute page-coordinate cursor can never be "moved" by
-// the app -- the browser gives no API to relocate the real OS pointer, so
-// an idle drift-to-center always got instantly undone by the next real
-// mouse move landing back at its old physical spot. Locking the pointer
-// hides the OS cursor and switches input to movementX/Y deltas, so our own
-// virtual cursor (pan) is fully decoupled from screen coordinates and a
-// drift-to-center actually sticks. cursorDot renders the virtual position
-// in place of the (now hidden) OS cursor. Engaged on click; the browser
-// always allows Esc to force it back off, which we fall back gracefully from.
-let pointerLocked = false;
+// No Pointer Lock. b16-b23 measured it on this tablet and it does not work
+// here: it drops itself unprompted, and around ninety percent of the movement
+// delivered under it cancels out. Without it the OS cursor cannot be relocated
+// by the app, so the idle drift to center is undone by the next real movement
+// landing back at the pointer's old physical spot. That is a real cost, and it
+// is the one b12's anchor was invented to cover -- but the anchor put part of
+// the rim out of reach, which is worse. Absolute mapping, plainly, is what is
+// left standing.
+//
+// cursorDot existed to stand in for the OS cursor while the lock hid it. With
+// nothing hiding it, the styled CSS cursor is the indicator and the dot is
+// hidden in CSS, so the two cannot disagree after a drift.
 
 function updateCursorDotPosition() {
   cursorDot.style.left = (pan.x / SRC_SIZE) * 100 + '%';
@@ -355,33 +352,14 @@ function clampPanToCircle() {
   }
 }
 
-stage.addEventListener('pointerdown', e => {
+// On window for the same reason, and because a press that lands outside the
+// box otherwise left the readout showing "input -" with no way to tell a
+// dead device from an unlistened corner of the page.
+window.addEventListener('pointerdown', e => {
   dbg.lastType = e.pointerType;
   dbgEvent('down (' + e.pointerType + ')');
-  if (e.pointerType === 'mouse' && document.pointerLockElement !== stage) {
-
-    const req = stage.requestPointerLock();
-    if (req && typeof req.catch === 'function') req.catch(() => {});
-  }
 });
 
-document.addEventListener('pointerlockchange', () => {
-  pointerLocked = document.pointerLockElement === stage;
-  dbg.lockChanges++;
-  dbgEvent('lockchange -> ' + lockElName());
-  cursorDot.style.display = pointerLocked ? 'block' : 'none';
-  if (pointerLocked) {
-    stage.style.cursor = 'none';
-    updateCursorDotPosition();
-  } else {
-    applyCssCursor(cursorColor || DEFAULT_CURSOR_COLOR);
-  }
-});
-document.addEventListener('pointerlockerror', () => {
-  pointerLocked = false;
-  dbg.lockErrors++;
-  dbgEvent('lockerror');
-});
 
 // A mouse reports movement far more often than the screen refreshes (125-1000
 // Hz against 60-120 Hz), and every draw is a full repaint of the whole circle.
@@ -405,19 +383,9 @@ function requestDraw() {
   });
 }
 
-// Locked and unlocked movement are handled by two separate listeners, each
-// asking document.pointerLockElement directly rather than trusting a cached
-// flag. They must never both run for one physical movement: while locked,
-// clientX/clientY are frozen at the coordinates where the lock was engaged, so
-// the unlocked branch would set pan to the click point on every event -- the
-// virtual cursor being yanked back to where it was locked. A cached flag makes
-// that a live possibility, because any move that arrives before
-// pointerlockchange has fired sees the wrong value.
-//
-// The locked branch listens for mousemove, not pointermove: movementX/movementY
-// on a PointerEvent has long read 0 under pointer lock in Chromium (which is
-// what the installed PWA runs), while MouseEvent's deltas are the supported
-// path. The dot froze at the lock point either way.
+// One listener, one mapping: the pointer's position on the stage is the pan,
+// directly. There is no delta path and no anchor, so every point of the circle
+// is reachable at every moment and nothing accumulates between events.
 
 function trackMove() {
   cancelDrift(); // a real pointer movement always wins over the idle drift
@@ -426,22 +394,12 @@ function trackMove() {
   requestDraw();
 }
 
-document.addEventListener('mousemove', e => {
-  if (document.pointerLockElement !== stage) return;
-  dbg.lockedMoves++;
-  dbg.lastHandler = 'mousemove (locked)';
-  dbg.mvx = e.movementX; dbg.mvy = e.movementY;
-  dbg.clientX = e.clientX; dbg.clientY = e.clientY;
-  const rect = stage.getBoundingClientRect();
-  // Deltas are summed on every event, including ones no draw follows --
-  // skipping any would lose that movement instead of merely deferring it.
-  pan.x += e.movementX * (SRC_SIZE / rect.width);
-  pan.y += e.movementY * (SRC_SIZE / rect.height);
-  trackMove();
-});
-
-stage.addEventListener('pointermove', e => {
-  if (document.pointerLockElement === stage) return; // mousemove above owns this
+// Listened for on window rather than the stage: the stage is a disc inside a
+// square box, so movement through its corners, or over the page around it, has
+// to count too -- otherwise the view sits still while the trackball is plainly
+// being moved. Coordinates outside the box map outside 0..SRC_SIZE quite
+// happily; clampPanToCircle puts them back on the rim afterwards.
+window.addEventListener('pointermove', e => {
   dbg.absMoves++;
   dbg.lastHandler = 'pointermove (absolute)';
   dbg.lastType = e.pointerType;
@@ -567,7 +525,7 @@ function setCursorDotColor(hex) {
   cursorColor = hex;
   cursorDot.style.background = hex;
   cursorDot.style.boxShadow = `0 0 0 2px rgba(0,0,0,0.55), 0 0 10px ${hex}`;
-  if (!pointerLocked) applyCssCursor(hex);
+  applyCssCursor(hex);
 }
 
 function setActivePattern(pattern) {
