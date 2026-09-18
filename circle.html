@@ -167,7 +167,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b27';
+const BUILD = 'b28';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -221,7 +221,7 @@ setInterval(() => {
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves + '   buttons ' + dbg.buttons,
     'anchor    ' + Math.round(anchor.x) + ', ' + Math.round(anchor.y) + '   cap ' + Math.round(MAX_ANCHOR),
     'slack     ' + Math.round(slack.x) + ', ' + Math.round(slack.y)
-                 + (slackAnimId !== null ? '   gliding' : ''),
+                 + '   washes over ' + Math.round(SLACK_WASH_DISTANCE),
     'movement  ' + dbg.mvx + ', ' + dbg.mvy,
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
     'pan       ' + Math.round(pan.x) + ', ' + Math.round(pan.y),
@@ -405,51 +405,33 @@ function baseFromEvent(e) {
 // mapping settles onto the pointer. The displacement still has to go -- the cap
 // is what keeps the rim reachable, and it is not negotiable -- but it leaves as
 // visible motion rather than as a discontinuity.
-// Scaled to the distance, so a small correction is quick and a full-screen one
-// is not a lurch. A fixed duration made the two feel like different bugs.
-const SLACK_GLIDE_MIN_MS = 220;
-const SLACK_GLIDE_MAX_MS = 900;
-const SLACK_GLIDE_PER_UNIT_MS = 0.9;
-let slackGlideMs = SLACK_GLIDE_MIN_MS;
+// Washed out by how far the pointer travels, not on a clock. A timed glide
+// (b27) cleared in half a second while dragging the view a third of the way
+// across the circle on its own -- correct, and still read as a lurch, because
+// the motion was the app's rather than the visitor's. Spent against travel
+// instead, the same correction happens inside a movement they are already
+// making, which the eye takes as their own doing.
+//
+// It washes over a shorter distance than the anchor: the slack sits outside the
+// cap, so while it is in force the rim it points away from is not yet
+// reachable, and it wants to be gone within the first sweep rather than the
+// second. Nothing drives it but movement, so a visitor who never touches the
+// trackball simply keeps the centred view, which is the point of the drift.
+// 0.35 measured against how far you have to pull back before the rim on the
+// far side comes within reach again, after a worst-case drift with the pointer
+// parked at the screen edge:
+//
+//   wash 0.60  retreat 180px: short by 102   retreat 280px: short by 18
+//   wash 0.45  retreat 180px: short by  58   retreat 280px: reached
+//   wash 0.35  retreat 180px: short by  23   retreat 280px: reached
+//   wash 0.25  retreat 180px: reached        retreat 280px: reached
+//
+// Below 0.35 the correction starts to be spent over so little travel that it is
+// b27's lurch again, merely charged to the visitor's hand instead of a timer.
+// Some retreat is unavoidable: with the pointer against the edge of the screen
+// there is no room left to push, whatever the numbers say.
+const SLACK_WASH_DISTANCE = SRC_SIZE * 0.35;
 let slack = { x: 0, y: 0 };
-let slackFrom = { x: 0, y: 0 };
-let slackStart = 0;
-let slackAnimId = null;
-
-function cancelSlackGlide() {
-  if (slackAnimId !== null) {
-    cancelAnimationFrame(slackAnimId);
-    slackAnimId = null;
-  }
-}
-
-// Guarded against restarting: called from the move handler, which fires many
-// times a second, so re-seeding it per event would hold the glide at its start
-// forever and the slack would never actually leave.
-function startSlackGlide() {
-  if (slackAnimId !== null) return;
-  if (slack.x === 0 && slack.y === 0) return;
-  slackFrom = { x: slack.x, y: slack.y };
-  slackGlideMs = Math.min(SLACK_GLIDE_MAX_MS,
-    SLACK_GLIDE_MIN_MS + Math.hypot(slack.x, slack.y) * SLACK_GLIDE_PER_UNIT_MS);
-  slackStart = performance.now();
-  slackAnimId = requestAnimationFrame(slackStep);
-}
-
-function slackStep(now) {
-  const t = Math.min(1, (now - slackStart) / slackGlideMs);
-  const k = 1 - easeInOutQuad(t);
-  slack.x = slackFrom.x * k;
-  slack.y = slackFrom.y * k;
-  applyMapping();
-  if (t < 1) {
-    slackAnimId = requestAnimationFrame(slackStep);
-  } else {
-    slackAnimId = null;
-    slack.x = 0;
-    slack.y = 0;
-  }
-}
 
 // The single place pan is derived from the pointer. The move handler and the
 // slack glide both go through it, so they cannot disagree about the mapping.
@@ -572,8 +554,11 @@ window.addEventListener('pointermove', e => {
   anchor.x *= keep;
   anchor.y *= keep;
 
+  const slackKeep = Math.max(0, 1 - travel / SLACK_WASH_DISTANCE);
+  slack.x *= slackKeep;
+  slack.y *= slackKeep;
+
   applyMapping();
-  startSlackGlide(); // no-op unless a drift left a remainder behind
   trackMove();
 });
 
@@ -600,7 +585,6 @@ function easeInOutQuad(t) {
 }
 
 function driftToCenter() {
-  cancelSlackGlide(); // the drift sets anchor and slack itself, every frame
   dbg.drifts++;
   dbgEvent('drift to center');
   const startX = pan.x, startY = pan.y;
