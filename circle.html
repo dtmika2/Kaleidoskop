@@ -391,6 +391,21 @@ const POINTER_GAIN = 1.6;
 
 // Coordinates outside the stage map outside 0..SRC_SIZE quite happily; they get
 // clamped back onto the circle afterwards.
+//
+// KNOWN WRONG, not yet fixed. This maps against the stage rect -- the circle's
+// own bounding box -- when it should map against the width and height of the
+// screen. Everything the pointer does beyond the circle is dead travel: move up
+// past the rim and back down again and the view does not move at all until the
+// pointer is back inside, and nothing on screen explains why, since the dot is
+// pinned to the rim the whole time. The gain makes it worse rather than better,
+// because it brings the rim within the middle ~62% of the screen and leaves the
+// remaining 38% as dead band on every side.
+//
+// Mapping the viewport onto the circle instead would remove the dead travel
+// entirely, at the cost of the edge-avoidance the gain was added for: the
+// pointer would have to reach the screen edges again to reach the rim, which is
+// what pulls Android's system bars down over the app. Worth measuring both
+// before choosing.
 function baseFromEvent(e) {
   const rect = stage.getBoundingClientRect();
   const half = SRC_SIZE / 2;
