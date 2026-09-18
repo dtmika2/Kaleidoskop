@@ -20,6 +20,11 @@
     overflow: hidden;
   }
   body {
+    /* Holding the button to steer is a drag as far as the browser is concerned,
+       and a drag over the clue letters selected them. */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
     background: var(--bg);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     display: flex;
@@ -56,11 +61,11 @@
 
   /* Virtual cursor shown while the pointer is locked (see pointer-lock JS) --
      the real OS cursor is hidden then, so this dot is the only visual cursor. */
-  /* Only ever needed as a stand-in for an OS cursor hidden by Pointer Lock.
-     Nothing hides it now, so the dot would sit alongside the real cursor and
-     disagree with it after a drift. */
+  /* Shown always. Inside the circle it is the only cursor -- the real one is
+     hidden there -- and it sits at the clamped pan, so when the pointer wanders
+     off the disc the dot stays on the rim and the OS cursor takes over outside.
+     Two indicators, each where the other cannot go. */
   .cursor-dot {
-    display: none;
     position: absolute;
     left: 50%;
     top: 50%;
@@ -167,7 +172,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b28';
+const BUILD = 'b29';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -177,7 +182,7 @@ const dbg = {
   hoverMoves: 0,
   dragMoves: 0,
   buttons: 0,
-  drifts: 0,
+  reshuffles: 0,
   lastHandler: '-',
   lastType: '-',       // pointerType of the last move: mouse, touch or pen
   mvx: 0, mvy: 0,
@@ -219,13 +224,12 @@ setInterval(() => {
     'handler   ' + dbg.lastHandler,
 
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves + '   buttons ' + dbg.buttons,
-    'anchor    ' + Math.round(anchor.x) + ', ' + Math.round(anchor.y) + '   cap ' + Math.round(MAX_ANCHOR),
-    'slack     ' + Math.round(slack.x) + ', ' + Math.round(slack.y)
-                 + '   washes over ' + Math.round(SLACK_WASH_DISTANCE),
+    'offset    ' + Math.round(mapOffset.x) + ', ' + Math.round(mapOffset.y)
+                 + (reshuffleAnimId !== null ? '   moving' : ''),
     'movement  ' + dbg.mvx + ', ' + dbg.mvy,
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
     'pan       ' + Math.round(pan.x) + ', ' + Math.round(pan.y),
-    'drifts    ' + dbg.drifts,
+    'reshuffle ' + dbg.reshuffles,
     '',
   ].concat(dbg.events).join('\n');
 }, 100);
@@ -253,6 +257,19 @@ const RADIUS = W / 2;
 const SLICES = 10; // matches the "many-slice" look of the original site
 
 let pan = { x: SRC_SIZE / 2, y: SRC_SIZE / 2 }; // current pan center into src texture
+
+// What the idle reset moves, instead of moving the view. The source tiles
+// infinitely, so the whole texture can be re-registered under the pointer:
+// sampling happens at pan + mapOffset, and every target is shifted by the same
+// amount, which leaves the puzzle exactly as hard and puts its answers
+// somewhere else. pan itself is never touched by it, so the pointer mapping
+// stays what it is -- which is the entire reason the anchor, the slack and the
+// pointer lock can all go.
+let mapOffset = { x: 0, y: 0 };
+
+function modSrc(v) {
+  return ((v % SRC_SIZE) + SRC_SIZE) % SRC_SIZE;
+}
 
 function renderKaleidoscope(targetCanvas, panVal, sampleRadius) {
   if (!sourceReady) return;
@@ -287,7 +304,7 @@ function renderKaleidoscope(targetCanvas, panVal, sampleRadius) {
 }
 
 function drawKaleidoscope() {
-  renderKaleidoscope(canvas, pan, RADIUS);
+  renderKaleidoscope(canvas, { x: pan.x + mapOffset.x, y: pan.y + mapOffset.y }, RADIUS);
 }
 
 /* ---------- 3. Hover handling: absolute position mapping, no drag needed ---------- */
@@ -321,21 +338,44 @@ drawKaleidoscope();
 
 const cursorDot = document.getElementById('cursorDot');
 
-// No Pointer Lock. b16-b23 measured it on this tablet and it does not work
-// here: it drops itself unprompted, and around ninety percent of the movement
-// delivered under it cancels out. Without it the OS cursor cannot be relocated
-// by the app, so the idle drift to center is undone by the next real movement
-// landing back at the pointer's old physical spot. That is a real cost, and it
-// is the one b12's anchor was invented to cover. The anchor is back below,
-// capped this time so it cannot put the rim out of reach.
+// No Pointer Lock, and nothing standing in for it. b16-b23 measured the lock on
+// this tablet and it does not work here: it drops itself unprompted, and around
+// ninety percent of the movement delivered under it cancels out.
 //
-// cursorDot existed to stand in for the OS cursor while the lock hid it. With
-// nothing hiding it, the styled CSS cursor is the indicator and the dot is
-// hidden in CSS, so the two cannot disagree after a drift.
+// Everything it was wanted for came from one requirement -- that an idle reset
+// to the middle survive the next movement -- and meeting that without the
+// ability to relocate the real pointer is what produced the anchor (b12), the
+// cap (b26) and the slack (b27-b28), each fixing the last one's side effect.
+// b29 drops the requirement instead: the idle reset moves the source and its
+// targets rather than the view, so the pointer never has to be anywhere it
+// isn't. pan is the pointer, and that is the whole mapping.
+//
+// cursorDot is the cursor inside the disc, where the real one is hidden, and it
+// sits at the clamped pan -- so it rests on the rim while the OS cursor carries
+// on outside, each visible exactly where the other is not.
 
 function updateCursorDotPosition() {
   cursorDot.style.left = (pan.x / SRC_SIZE) * 100 + '%';
   cursorDot.style.top = (pan.y / SRC_SIZE) * 100 + '%';
+}
+
+// The dot marks pan, which is clamped to the disc; the OS cursor marks where
+// the hand actually is, which can be anywhere. Inside the circle they would sit
+// on top of each other, so the real one is hidden there and handed back the
+// moment the pointer leaves the disc -- which is also the only time it says
+// anything the dot cannot.
+let cursorHidden = null;
+function updateCursorVisibility(e) {
+  const rect = stage.getBoundingClientRect();
+  const dx = e.clientX - (rect.left + rect.width / 2);
+  const dy = e.clientY - (rect.top + rect.height / 2);
+  const inside = Math.hypot(dx, dy) <= rect.width / 2;
+  if (inside === cursorHidden) return;
+  cursorHidden = inside;
+  // Only the stage needs touching: anywhere inside the circle is inside its box
+  // too, and the page around it never had a cursor of ours to begin with.
+  if (inside) stage.style.cursor = 'none';
+  else applyCssCursor(cursorColor || DEFAULT_CURSOR_COLOR);
 }
 
 function applyCssCursor(hex) {
@@ -350,36 +390,6 @@ function applyCssCursor(hex) {
 // covers the whole circle from within the middle ~62% of the screen.
 const POINTER_GAIN = 1.6;
 
-// The anchor is what makes a drift stick. No web API can relocate the real
-// pointer, so rather than moving it, the mapping moves under it: while the view
-// glides to center, the anchor is held equal to (pan - pointer), so at every
-// instant the pointer's physical spot already means wherever the view now sits.
-// Whether the drift finishes or someone grabs the trackball halfway through,
-// movement resumes from there with nothing to jump.
-//
-// Uncapped -- as it was from b12 to b18 -- that is precisely what put part of
-// the rim out of reach: with an offset in force the pointer would have to leave
-// the screen to make up the difference, so pushing straight at one side stopped
-// short, while coming at the same spot indirectly (which washed the anchor out
-// on the way) arrived. The fault was never the re-anchoring; it was that
-// nothing bounded it.
-//
-// The gain is what pays for it. Mapped at gain G about the center, the
-// pointer's physical range covers pan from half*(1-G) to half*(1+G), which
-// overshoots the circle by SRC_SIZE*(G-1)/2 on each side. That overshoot is
-// exactly the headroom an offset can be made up from, so an anchor capped to it
-// can always be pushed through, and an anchor larger than it never can. At
-// gain 1.6 that is 30% of the circle's width -- well over what a drift needs.
-const MAX_ANCHOR = SRC_SIZE * (POINTER_GAIN - 1) / 2;
-
-// It washes out with travel as well, so the offset fades with use rather than
-// on a clock: someone standing still never has the view slide out from under
-// them, and a sweep or two clears it entirely.
-const ANCHOR_WASH_DISTANCE = SRC_SIZE * 1.5;
-
-let anchor = { x: 0, y: 0 };
-let lastBase = { x: SRC_SIZE / 2, y: SRC_SIZE / 2 }; // last pointer pos, stage coords
-
 // Coordinates outside the stage map outside 0..SRC_SIZE quite happily; they get
 // clamped back onto the circle afterwards.
 function baseFromEvent(e) {
@@ -393,62 +403,14 @@ function baseFromEvent(e) {
   };
 }
 
-// The anchor cannot carry more than MAX_ANCHOR, but a drift can easily need
-// more: the offset it asks for is (centre - pointer), and the pointer is
-// gain-mapped, so at the edge of the screen it wants 720 against a cap of 270.
-// b26 dropped that remainder, and dropping it is what made the view jump on the
-// first movement after a drift.
-//
-// It is held in slack instead. At the instant movement resumes, anchor + slack
-// together come to exactly what the drift asked for, so there is nothing to
-// jump; the slack then eases to zero over a few hundred milliseconds and the
-// mapping settles onto the pointer. The displacement still has to go -- the cap
-// is what keeps the rim reachable, and it is not negotiable -- but it leaves as
-// visible motion rather than as a discontinuity.
-// Washed out by how far the pointer travels, not on a clock. A timed glide
-// (b27) cleared in half a second while dragging the view a third of the way
-// across the circle on its own -- correct, and still read as a lurch, because
-// the motion was the app's rather than the visitor's. Spent against travel
-// instead, the same correction happens inside a movement they are already
-// making, which the eye takes as their own doing.
-//
-// It washes over a shorter distance than the anchor: the slack sits outside the
-// cap, so while it is in force the rim it points away from is not yet
-// reachable, and it wants to be gone within the first sweep rather than the
-// second. Nothing drives it but movement, so a visitor who never touches the
-// trackball simply keeps the centred view, which is the point of the drift.
-// 0.35 measured against how far you have to pull back before the rim on the
-// far side comes within reach again, after a worst-case drift with the pointer
-// parked at the screen edge:
-//
-//   wash 0.60  retreat 180px: short by 102   retreat 280px: short by 18
-//   wash 0.45  retreat 180px: short by  58   retreat 280px: reached
-//   wash 0.35  retreat 180px: short by  23   retreat 280px: reached
-//   wash 0.25  retreat 180px: reached        retreat 280px: reached
-//
-// Below 0.35 the correction starts to be spent over so little travel that it is
-// b27's lurch again, merely charged to the visitor's hand instead of a timer.
-// Some retreat is unavoidable: with the pointer against the edge of the screen
-// there is no room left to push, whatever the numbers say.
-const SLACK_WASH_DISTANCE = SRC_SIZE * 0.35;
-let slack = { x: 0, y: 0 };
-
-// The single place pan is derived from the pointer. The move handler and the
-// slack glide both go through it, so they cannot disagree about the mapping.
-function applyMapping() {
-  pan.x = lastBase.x + anchor.x + slack.x;
-  pan.y = lastBase.y + anchor.y + slack.y;
+// pan is the pointer, and nothing else. No offset, no delta, no accumulator --
+// so every point of the circle is reachable from every pointer position, at
+// every moment, and there is no state to get out of step with the hand.
+function applyMapping(base) {
+  pan.x = base.x;
+  pan.y = base.y;
   clampPanToCircle();
   requestDraw();
-}
-
-function capAnchor() {
-  const dist = Math.hypot(anchor.x, anchor.y);
-  if (dist > MAX_ANCHOR) {
-    const scale = MAX_ANCHOR / dist;
-    anchor.x *= scale;
-    anchor.y *= scale;
-  }
 }
 
 // The stage is a circle inscribed in its square bounding box, so the movable
@@ -524,11 +486,13 @@ function requestDraw() {
 // directly. There is no delta path and no anchor, so every point of the circle
 // is reachable at every moment and nothing accumulates between events.
 
+// applyMapping has already clamped and asked for the draw; all that is left is
+// to say the app was touched. A reshuffle in flight is deliberately not
+// cancelled: it is the source that is moving, not the view, so it costs the
+// visitor no control, and stopping it half way could leave an offset that puts
+// a target outside the disc.
 function trackMove() {
-  cancelDrift(); // a real pointer movement always wins over the idle drift
   noteActivity();
-  clampPanToCircle(); // per event, so summed deltas cannot run up a debt past the rim
-  requestDraw();
 }
 
 // Listened for on window rather than the stage: the stage is a disc inside a
@@ -540,105 +504,143 @@ window.addEventListener('pointermove', e => {
   dbg.absMoves++;
   if (e.buttons) dbg.dragMoves++; else dbg.hoverMoves++;
   dbg.buttons = e.buttons;
-  dbg.lastHandler = 'pointermove (anchored)';
+  dbg.lastHandler = 'pointermove (absolute)';
   dbg.lastType = e.pointerType;
-
-  dbg.mvx = e.movementX; dbg.mvy = e.movementY;
   dbg.clientX = e.clientX; dbg.clientY = e.clientY;
 
   const base = baseFromEvent(e);
-  const travel = Math.hypot(base.x - lastBase.x, base.y - lastBase.y);
-  lastBase = base;
-
-  const keep = Math.max(0, 1 - travel / ANCHOR_WASH_DISTANCE);
-  anchor.x *= keep;
-  anchor.y *= keep;
-
-  const slackKeep = Math.max(0, 1 - travel / SLACK_WASH_DISTANCE);
-  slack.x *= slackKeep;
-  slack.y *= slackKeep;
-
-  applyMapping();
+  applyMapping(base);
+  updateCursorVisibility(e);
   trackMove();
 });
 
-// After 20s with no pointer activity, glide back to the center over time
-// (rather than snapping instantly) so the reset is visible as motion -- the
-// next visitor sees the pattern actually settled at center, not just an
-// image that happens to reset the moment they touch it.
+// After 20s with no pointer activity the mapping is re-registered: the whole
+// source, and every target with it, slides to a new offset underneath a pointer
+// that does not move.
+//
+// The point of the idle reset was never to put the view back in the middle. It
+// was to stop the next visitor walking up to a clue the last one had already
+// found, still sitting where they left it. Moving the answers does that, and
+// unlike moving the view it asks nothing of a cursor the app has no way to
+// relocate -- which is what Pointer Lock, then the anchor, then the slack were
+// all for. None of them are needed to reset a puzzle whose reset does not
+// involve the pointer.
 const IDLE_RESET_MS = 20000;
 const IDLE_CHECK_MS = 500;
-const DRIFT_DURATION_MS = 1400;
-let driftAnimId = null;
-let lastActivityAt = performance.now();
-let driftedSinceActivity = false;
+const RESHUFFLE_MS = 1400;
 
-function cancelDrift() {
-  if (driftAnimId !== null) {
-    cancelAnimationFrame(driftAnimId);
-    driftAnimId = null;
-  }
-}
+// Two things a new offset has to satisfy. Every target must stay inside the
+// disc, or a clue becomes unfindable; and none may land where the pointer was
+// left standing, or the reset hands the next visitor an answer instead of
+// taking one away.
+//
+// The second number comes from the reveal threshold, not from taste. proximity
+// is 1 - dist/500 and letters begin to appear at 0.90, so a word is only ever
+// legible within 50 of its target. 160 is more than three times that: far
+// enough that arriving and nudging the trackball cannot uncover anything, close
+// enough to leave the offsets feasible. Asking for 300 is not a stricter
+// version of the same idea -- it is unsatisfiable, since an exclusion disc that
+// size around the pointer cannot be cleared by all four targets at once while
+// they stay in the circle. Measured over a grid of every translation:
+//
+//   margin 430, away 300:  0 usable        <- what b29 first asked for
+//   margin 430, away 220:  0.1% usable
+//   margin 430, away 160:  5.5% usable     <- chosen
+//
+// If even that finds nothing from where the pointer happens to be, the second
+// pass drops the away test and takes any offset that keeps the clues findable:
+// a reset that moves the answers somewhere is worth more than one that gives up
+// and leaves them exactly where they were.
+const TARGET_MARGIN = 430;
+const MIN_AWAY_FROM_POINTER = 160;
+
+let reshuffleAnimId = null;
+let lastActivityAt = performance.now();
+let reshuffledSinceActivity = false;
 
 function easeInOutQuad(t) {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
-function driftToCenter() {
-  dbg.drifts++;
-  dbgEvent('drift to center');
-  const startX = pan.x, startY = pan.y;
-  const targetX = SRC_SIZE / 2, targetY = SRC_SIZE / 2;
+// Where a target ends up, in pan coordinates, for a given offset. The source
+// tiles, so this wraps rather than running off the edge.
+function targetFor(p, offset) {
+  return {
+    x: modSrc(p.target.x - offset.x),
+    y: modSrc(p.target.y - offset.y),
+  };
+}
+
+function refreshTargets() {
+  PATTERNS.forEach(p => { p.eff = targetFor(p, mapOffset); });
+}
+
+function offsetIsUsable(o, requireAway) {
+  const c = SRC_SIZE / 2;
+  return PATTERNS.every(p => {
+    const t = targetFor(p, o);
+    if (Math.hypot(t.x - c, t.y - c) > TARGET_MARGIN) return false;
+    if (requireAway && Math.hypot(t.x - pan.x, t.y - pan.y) < MIN_AWAY_FROM_POINTER) return false;
+    return true;
+  });
+}
+
+function pickOffset() {
+  for (const requireAway of [true, false]) {
+    for (let tries = 0; tries < 300; tries++) {
+      const o = { x: Math.random() * SRC_SIZE, y: Math.random() * SRC_SIZE };
+      if (offsetIsUsable(o, requireAway)) return o;
+    }
+  }
+  return null; // only if the targets cannot be fitted at all
+}
+
+function reshuffleMapping() {
+  const to = pickOffset();
+  if (!to) {
+    dbgEvent('reshuffle: no usable offset');
+    return;
+  }
+  dbg.reshuffles++;
+  dbgEvent('reshuffle mapping');
+  const fromX = mapOffset.x, fromY = mapOffset.y;
   const startTime = performance.now();
 
   function step(now) {
-    const t = Math.min(1, (now - startTime) / DRIFT_DURATION_MS);
+    const t = Math.min(1, (now - startTime) / RESHUFFLE_MS);
     const e = easeInOutQuad(t);
-    pan.x = startX + (targetX - startX) * e;
-    pan.y = startY + (targetY - startY) * e;
-    // Re-anchored every frame, not just at the end: the drift can be
-    // interrupted at any point, and this way the pointer's physical spot
-    // already means "here" whenever movement resumes. Capped on the spot, so
-    // the rim it points away from stays within the pointer's reach.
-    const wantX = pan.x - lastBase.x;
-    const wantY = pan.y - lastBase.y;
-    anchor.x = wantX;
-    anchor.y = wantY;
-    capAnchor();
-    // Whatever the cap refused is not thrown away, it is parked in slack, so
-    // anchor + slack still add up to the drift's full displacement.
-    slack.x = wantX - anchor.x;
-    slack.y = wantY - anchor.y;
+    mapOffset.x = fromX + (to.x - fromX) * e;
+    mapOffset.y = fromY + (to.y - fromY) * e;
+    refreshTargets();
     renderNow();
     if (t < 1) {
-      driftAnimId = requestAnimationFrame(step);
+      reshuffleAnimId = requestAnimationFrame(step);
     } else {
-      driftAnimId = null;
+      reshuffleAnimId = null;
     }
   }
-  driftAnimId = requestAnimationFrame(step);
+  reshuffleAnimId = requestAnimationFrame(step);
 }
 
 // Idleness is measured against a timestamp polled twice a second, rather than a
 // timeout torn down and recreated on every single pointer event.
 function noteActivity() {
   lastActivityAt = performance.now();
-  driftedSinceActivity = false;
+  reshuffledSinceActivity = false;
 }
 
 // Any pointer activity in the window counts, not only movement over the circle.
 // The stage is a disc inside a square box, so passing through its corners -- or
-// over the page around it -- fired no stage pointermove at all, and the view
-// would drift back to center while the user was still moving the mouse.
+// over the page around it -- fires no stage pointermove at all.
 ['pointermove', 'pointerdown', 'wheel', 'keydown'].forEach(type => {
   window.addEventListener(type, noteActivity, { passive: true });
 });
 
 setInterval(() => {
-  if (driftedSinceActivity || driftAnimId !== null) return;
+  if (reshuffledSinceActivity || reshuffleAnimId !== null) return;
   if (performance.now() - lastActivityAt >= IDLE_RESET_MS) {
-    driftedSinceActivity = true; // one drift per idle stretch, not one per check
-    driftToCenter();
+    reshuffledSinceActivity = true; // one reshuffle per idle stretch
+    reshuffleMapping();
   }
 }, IDLE_CHECK_MS);
 
@@ -673,6 +675,7 @@ function genRevealOrder(len) {
 PATTERNS.forEach(p => {
   p.revealOrder = genRevealOrder(p.word.length);
 });
+refreshTargets(); // identity until the first idle reset, but never undefined
 
 const ring = document.getElementById('ring');
 const stageWrap = document.getElementById('stageWrap');
@@ -686,7 +689,7 @@ function setCursorDotColor(hex) {
   cursorColor = hex;
   cursorDot.style.background = hex;
   cursorDot.style.boxShadow = `0 0 0 2px rgba(0,0,0,0.55), 0 0 10px ${hex}`;
-  applyCssCursor(hex);
+  if (cursorHidden !== true) applyCssCursor(hex); // never un-hide it mid-circle
 }
 
 function setActivePattern(pattern) {
@@ -733,7 +736,8 @@ function updateWordReveal(pattern, proximity) {
 function updateMatch() {
   let best = null, bestProximity = -1;
   PATTERNS.forEach(p => {
-    const dist = Math.hypot(pan.x - p.target.x, pan.y - p.target.y);
+    const t = p.eff || p.target; // shifted by whatever the last idle reset chose
+    const dist = Math.hypot(pan.x - t.x, pan.y - t.y);
     const proximity = Math.max(0, 1 - dist / 500);
     if (proximity > bestProximity) {
       bestProximity = proximity;
