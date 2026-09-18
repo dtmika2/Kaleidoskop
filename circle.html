@@ -20,6 +20,9 @@
     overflow: hidden;
   }
   body {
+    /* The dot replaces the pointer entirely. Two cursors on screen, one of them
+       lagging the other, reads as a bug. */
+    cursor: none;
     background: var(--bg);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     display: flex;
@@ -37,7 +40,6 @@
     inset: 0;
     border-radius: 50%;
     overflow: hidden;
-    cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='6' fill='%23ff8a3d' stroke='%23000000' stroke-opacity='0.55' stroke-width='1.5'/></svg>") 10 10, pointer;
     box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 20px 60px rgba(0,0,0,0.5);
     touch-action: none;
   }
@@ -54,8 +56,10 @@
     transition: opacity 0.15s linear, border-color 0.2s linear, box-shadow 0.2s linear;
   }
 
-  /* Virtual cursor shown while the pointer is locked (see pointer-lock JS) --
-     the real OS cursor is hidden then, so this dot is the only visual cursor. */
+  /* The only visual cursor. The OS one is hidden across the page (below), so
+     this dot is what the visitor actually steers -- and unlike the OS cursor it
+     can be put back at the center by the app, which is what lets the idle drift
+     stick without Pointer Lock. */
   .cursor-dot {
     position: absolute;
     left: 50%;
@@ -69,6 +73,51 @@
     box-shadow: 0 0 0 2px rgba(0,0,0,0.55), 0 0 10px rgba(255,138,61,0.9);
     pointer-events: none;
     z-index: 4;
+  }
+
+  /* Build stamp. The service worker can serve a page from cache, so "is the
+     fix even running?" is otherwise unanswerable from inside the app. */
+  /* Tapping the badge toggles the readout: there is no keyboard on a tablet,
+     which is where this actually needs to be read. Padded out to a finger-sized
+     target, sitting outside .stage-wrap so it never reaches the stage. */
+  .build-badge {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    z-index: 10;
+    margin: 10px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: rgba(0,0,0,0.55);
+    font: 13px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color: rgba(255,255,255,0.8);
+    letter-spacing: 0.5px;
+
+    user-select: none;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    cursor: pointer;
+  }
+  .build-badge.on { color: #ff8a3d; background: rgba(0,0,0,0.8); }
+
+
+  /* Diagnostics for the pointer-lock behaviour; toggled by tapping the badge. */
+  .debug-panel {
+    position: fixed;
+    left: 8px;
+    top: 8px;
+    z-index: 10;
+    margin: 0;
+    padding: 8px 10px;
+    max-width: 92vw;
+    border-radius: 6px;
+    background: rgba(0,0,0,0.86);
+    color: #bfe6c0;
+    font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+    white-space: pre;
+    pointer-events: none;
+    user-select: none;
     display: none;
   }
 
@@ -110,8 +159,86 @@
     <div class="glow-ring" id="ring"></div>
     <div class="cursor-dot" id="cursorDot"></div>
   </div>
+  <div class="build-badge" id="buildBadge"></div>
+  <pre class="debug-panel" id="debugPanel"></pre>
 
 <script>
+/* ---------- 0. Build stamp and pointer diagnostics ---------- */
+// Bump BUILD on every change that gets pushed. It is shown in the corner so a
+// cached page can be told apart from a fresh one from inside the installed app.
+const BUILD = 'b18';
+document.getElementById('buildBadge').textContent = BUILD;
+
+// Counters, not logs: the question is which code path handles movement while
+// the pointer is locked, and whether the lock is actually holding.
+const dbg = {
+  absMoves: 0,
+  // Hovering and pressed movement counted apart. Under Fully Kiosk's kiosk mode
+  // only the pressed kind arrives, and which of the two counters moves says
+  // whether the WebView is being denied hover events or is being handed the
+  // input as touch, where hovering cannot exist at all.
+  hoverMoves: 0,
+  dragMoves: 0,
+  buttons: 0,
+  lockedMoves: 0,
+  lockChanges: 0,
+  lockErrors: 0,
+  driftFrames: 0,     // the idle glide writes pan every frame while it runs
+  mvx: 0, mvy: 0,     // raw deltas as delivered under lock
+  zeroStreak: 0,
+  drifts: 0,
+  lastHandler: '-',
+  lastType: '-',       // pointerType of the last move: mouse, touch or pen
+  clientX: 0, clientY: 0,
+  events: [],
+};
+
+
+function dbgEvent(text) {
+  dbg.events.unshift(Math.round(performance.now() / 100) / 10 + 's ' + text);
+  if (dbg.events.length > 6) dbg.events.length = 6;
+}
+
+const debugPanel = document.getElementById('debugPanel');
+const buildBadge = document.getElementById('buildBadge');
+let debugVisible = false;
+
+function toggleDebug() {
+  debugVisible = !debugVisible;
+  debugPanel.style.display = debugVisible ? 'block' : 'none';
+  buildBadge.classList.toggle('on', debugVisible);
+}
+
+// Tap the badge (tablet) or press D (desktop).
+buildBadge.addEventListener('click', toggleDebug);
+window.addEventListener('keydown', e => {
+  if (e.key === 'd' || e.key === 'D') toggleDebug();
+});
+
+
+setInterval(() => {
+  if (!debugVisible) return;
+  debugPanel.textContent = [
+    'build     ' + BUILD,
+    'display   ' + (matchMedia('(display-mode: fullscreen)').matches ? 'fullscreen'
+                  : matchMedia('(display-mode: standalone)').matches ? 'standalone (status bar shows)'
+                  : 'browser tab') + (document.fullscreenElement ? ' +api' : ''),
+    'input     ' + dbg.lastType + '   touchpts ' + (navigator.maxTouchPoints || 0),
+    'lock      ' + (lockActive() ? 'ON' : (lockDisabled ? 'given up' : 'off'))
+                 + '   locked moves ' + dbg.lockedMoves
+                 + '   chg ' + dbg.lockChanges + '  err ' + dbg.lockErrors,
+    'handler   ' + dbg.lastHandler,
+    'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves,
+    'movement  ' + dbg.mvx + ', ' + dbg.mvy + '   zeros ' + dbg.zeroStreak,
+    'drift     frames ' + dbg.driftFrames + '   starts ' + dbg.drifts
+                        + '   active ' + (driftAnimId !== null ? 'YES' : 'no'),
+    'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
+    'pan       ' + Math.round(pan.x) + ', ' + Math.round(pan.y),
+    'drifts    ' + dbg.drifts,
+    '',
+  ].concat(dbg.events).join('\n');
+}, 100);
+
 /* ---------- 1. Load the source texture ---------- */
 const SRC_SIZE = 900; // matches the embedded image's native size
 const src = document.createElement('canvas');
@@ -179,8 +306,17 @@ const stage = document.getElementById('stage');
 // tracks 100vmin, so it fills to the edges on any device/orientation) times
 // devicePixelRatio, so the render stays sharp instead of being CSS-stretched
 // from a fixed small bitmap.
+// Each frame repaints SLICES full-size wedges of a tiled 900x900 pattern, so
+// cost grows with the square of this number. Uncapped, an installed PWA on a
+// high-DPI screen asks for a ~2000px canvas -- standalone has no tab strip or
+// URL bar, so 94vmin is larger than in a tab -- and the repaint could not keep
+// up with the mouse. Capping trades sharpness nobody can see for a frame rate
+// the pointer can ride on.
+const MAX_CANVAS_PX = 1400;
+
 function resizeCanvas() {
-  const size = Math.round(stage.clientWidth * (window.devicePixelRatio || 1));
+  const dpr = window.devicePixelRatio || 1;
+  const size = Math.min(MAX_CANVAS_PX, Math.round(stage.clientWidth * dpr));
   if (size > 0 && canvas.width !== size) {
     canvas.width = size;
     canvas.height = size;
@@ -194,24 +330,46 @@ drawKaleidoscope();
 
 const cursorDot = document.getElementById('cursorDot');
 
-// Pointer Lock: an absolute page-coordinate cursor can never be "moved" by
-// the app -- the browser gives no API to relocate the real OS pointer, so
-// an idle drift-to-center always got instantly undone by the next real
-// mouse move landing back at its old physical spot. Locking the pointer
-// hides the OS cursor and switches input to movementX/Y deltas, so our own
-// virtual cursor (pan) is fully decoupled from screen coordinates and a
-// drift-to-center actually sticks. cursorDot renders the virtual position
-// in place of the (now hidden) OS cursor. Engaged on click; the browser
-// always allows Esc to force it back off, which we fall back gracefully from.
-let pointerLocked = false;
+// Movement is relative, always, whether Pointer Lock is held or not. The two
+// used to be handled differently -- deltas while locked, absolute position
+// while not -- and on this tablet the lock does not stay held, so the app kept
+// switching schemes underneath the user. Each drop left the real pointer frozen
+// wherever lock had grabbed it, and the absolute path then walked the dot back
+// onto that spot, which is the "it keeps pulling me back to where I clicked"
+// that has been chased through several builds.
+//
+// With deltas on both sides there is no absolute position to be pulled back to,
+// losing the lock changes nothing about how it feels, and the idle drift sticks
+// for free, since nothing ever maps the pointer's physical location onto pan.
 
 function updateCursorDotPosition() {
   cursorDot.style.left = (pan.x / SRC_SIZE) * 100 + '%';
   cursorDot.style.top = (pan.y / SRC_SIZE) * 100 + '%';
 }
 
-function applyCssCursor(hex) {
-  stage.style.cursor = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'><circle cx='10' cy='10' r='6' fill='${encodeURIComponent(hex)}' stroke='%23000000' stroke-opacity='0.55' stroke-width='1.5'/></svg>") 10 10, pointer`;
+// Gain keeps the real pointer away from the edges of the screen. The circle is
+// 94vmin, so on a landscape tablet it is 94% of the screen height, and mapping
+// it 1:1 meant reaching the top of the circle required the pointer to be within
+// a few percent of the top of the screen -- far enough into Android's reveal
+// zone to pull the status bar down over the app. At a gain of 1.6 the pointer
+// covers the whole circle from within the middle ~62% of the screen, so the top
+// of the circle sits around a fifth of the way down instead of at the very
+// edge. Nothing in the web platform can confine the real pointer -- that was
+// Pointer Lock's one genuine advantage -- so the next best thing is giving it
+// no reason to go there.
+const POINTER_GAIN = 1.6;
+
+// The one place pan is moved by the pointer. dx/dy arrive in CSS pixels and are
+// converted to source units through the stage's current size, so sensitivity
+// stays the same whatever the screen.
+function applyPointerDelta(dx, dy) {
+  const rect = stage.getBoundingClientRect();
+  pan.x += dx * (SRC_SIZE / rect.width) * POINTER_GAIN;
+  pan.y += dy * (SRC_SIZE / rect.height) * POINTER_GAIN;
+  cancelDrift(); // a real movement always wins over the idle drift
+  noteActivity();
+  clampPanToCircle();
+  requestDraw();
 }
 
 // The stage is a circle inscribed in its square bounding box, so the movable
@@ -231,54 +389,174 @@ function clampPanToCircle() {
   }
 }
 
+// The status bar is the only thing kiosk mode was wanted for, and the manifest
+// now asks for display: fullscreen, which hides it on Android. If the installed
+// app came up merely standalone -- an older install still carrying the previous
+// manifest, say -- the Fullscreen API gets the same result, but only from
+// inside a user gesture, so the first touch is where it has to be asked for.
+// Never attempted in a browser tab, where taking over the screen unasked would
+// be obnoxious.
+function enterFullscreenIfStandalone() {
+  if (!matchMedia('(display-mode: standalone)').matches) return;
+  if (document.fullscreenElement) return;
+  const el = document.documentElement;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!req) return;
+  try {
+    const p = req.call(el, { navigationUI: 'hide' });
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+    dbgEvent('fullscreen requested');
+  } catch (err) {
+    dbgEvent('fullscreen failed');
+  }
+}
+
 stage.addEventListener('pointerdown', e => {
-  if (e.pointerType === 'mouse' && document.pointerLockElement !== stage) {
-    const req = stage.requestPointerLock();
-    if (req && typeof req.catch === 'function') req.catch(() => {});
-  }
+  dbg.lastType = e.pointerType;
+  dbgEvent('down (' + e.pointerType + ')');
+  enterFullscreenIfStandalone();
+  if (e.pointerType === 'mouse') requestLockIfPossible();
 });
 
-document.addEventListener('pointerlockchange', () => {
-  pointerLocked = document.pointerLockElement === stage;
-  cursorDot.style.display = pointerLocked ? 'block' : 'none';
-  if (pointerLocked) {
-    stage.style.cursor = 'none';
-    updateCursorDotPosition();
-  } else {
-    applyCssCursor(cursorColor || DEFAULT_CURSOR_COLOR);
-  }
-});
-document.addEventListener('pointerlockerror', () => {
-  pointerLocked = false;
-});
+// A mouse reports movement far more often than the screen refreshes (125-1000
+// Hz against 60-120 Hz), and every draw is a full repaint of the whole circle.
+// Drawing straight from the event handler meant several full repaints per
+// displayed frame, so the input queue fell behind and the dot moved in jerks --
+// worst in the installed PWA, where the canvas is largest. The handler now only
+// updates pan and asks for a single draw per animation frame.
+let drawFrameId = null;
 
-stage.addEventListener('pointermove', e => {
-  cancelDrift(); // a real pointer position always wins over the idle drift
-  const rect = stage.getBoundingClientRect();
-  if (pointerLocked) {
-    pan.x += e.movementX * (SRC_SIZE / rect.width);
-    pan.y += e.movementY * (SRC_SIZE / rect.height);
-  } else {
-    const nx = (e.clientX - rect.left) / rect.width;  // 0..1 across the stage
-    const ny = (e.clientY - rect.top) / rect.height;
-    pan.x = nx * SRC_SIZE;
-    pan.y = ny * SRC_SIZE;
-  }
-  clampPanToCircle();
+function renderNow() {
   drawKaleidoscope();
   updateMatch();
   updateCursorDotPosition();
-  scheduleIdleReset();
+}
+
+function requestDraw() {
+  if (drawFrameId !== null) return;
+  drawFrameId = requestAnimationFrame(() => {
+    drawFrameId = null;
+    renderNow();
+  });
+}
+
+// Pointer Lock is the only thing in the platform that stops the real pointer
+// reaching the edge of the screen, where Android reveals the status bar over
+// the app. Gain alone cannot fix that -- it makes the edge hard to reach by
+// accident, not unreachable -- so lock is attempted again here, but strictly as
+// an enhancement: everything below still works when it is refused, and the
+// watchdog gives it up permanently at the first sign that it is not delivering.
+//
+// The earlier trouble with lock on this device was never tested against a
+// correct implementation, since the tablet was serving a stale build at the
+// time. If it misbehaves now, it disables itself within a fraction of a second
+// and the unlocked delta path takes over, which feels the same either way.
+const LOCK_DEAD_MOVES = 20; // all-zero deltas in a row before giving up on lock
+
+let lockDisabled = false;
+let zeroMoveStreak = 0;
+let lastClient = null; // previous pointer position, for deltas while unlocked
+
+function lockActive() {
+  return document.pointerLockElement === stage;
+}
+
+function requestLockIfPossible() {
+  if (lockDisabled || lockActive() || !stage.requestPointerLock) return;
+  try {
+    const p = stage.requestPointerLock();
+    if (p && typeof p.catch === 'function') p.catch(() => { lockDisabled = true; });
+  } catch (err) {
+    lockDisabled = true;
+  }
+}
+
+function abandonLock(why) {
+  lockDisabled = true;
+  dbgEvent('lock abandoned: ' + why);
+  if (lockActive() && document.exitPointerLock) document.exitPointerLock();
+}
+
+document.addEventListener('pointerlockchange', () => {
+  dbg.lockChanges++;
+  dbgEvent('lock -> ' + (lockActive() ? 'on' : 'off'));
+  zeroMoveStreak = 0;
+  if (!lockActive()) {
+    // The unlocked path measures movement between events, so the first one
+    // after a drop has nothing to measure against and must only seed itself.
+    lastClient = null;
+    // Lock does not stay held on this device. Ask for it straight back; if the
+    // browser insists on a fresh gesture it will refuse harmlessly and the next
+    // touch will get it, with the delta path carrying on regardless.
+    requestLockIfPossible();
+  }
 });
 
-// After 5s with no pointer movement, glide back to the center over time
+document.addEventListener('pointerlockerror', () => {
+  dbg.lockErrors++;
+  abandonLock('error');
+});
+
+// While locked, clientX/clientY are frozen, so only the deltas mean anything.
+document.addEventListener('mousemove', e => {
+  if (!lockActive()) return;
+
+  const mvx = e.movementX || 0;
+  const mvy = e.movementY || 0;
+  // Some engines deliver lock without delivering deltas, which would leave the
+  // dot frozen and the app looking broken. Count the silence and bail out.
+  if (mvx === 0 && mvy === 0) {
+    dbg.zeroStreak = ++zeroMoveStreak;
+    if (zeroMoveStreak >= LOCK_DEAD_MOVES) abandonLock('no movement delivered');
+    return;
+  }
+  zeroMoveStreak = 0;
+
+  dbg.absMoves++;
+  dbg.lockedMoves++;
+  dbg.lastHandler = 'mousemove (locked)';
+  dbg.mvx = mvx; dbg.mvy = mvy;
+
+  applyPointerDelta(mvx, mvy);
+});
+
+// Listened for on window rather than the stage: the stage is a disc inside a
+// square box, so movement through its corners, or over the page around it, has
+// to count too -- otherwise the view sat still while the trackball was plainly
+// being moved.
+window.addEventListener('pointermove', e => {
+  if (lockActive()) return; // the locked handler above owns movement
+  dbg.absMoves++;
+  if (e.buttons) dbg.dragMoves++; else dbg.hoverMoves++;
+  dbg.buttons = e.buttons;
+  dbg.lastHandler = 'pointermove (unlocked deltas)';
+  dbg.lastType = e.pointerType;
+  dbg.clientX = e.clientX; dbg.clientY = e.clientY;
+
+  // Without the lock the browser gives no deltas, so they are measured between
+  // events. A first event after load or after a drop only seeds the reference.
+  if (lastClient === null) {
+    lastClient = { x: e.clientX, y: e.clientY };
+    return;
+  }
+  const dx = e.clientX - lastClient.x;
+  const dy = e.clientY - lastClient.y;
+  lastClient = { x: e.clientX, y: e.clientY };
+  dbg.mvx = dx; dbg.mvy = dy;
+
+  applyPointerDelta(dx, dy);
+});
+
+// After 20s with no pointer activity, glide back to the center over time
 // (rather than snapping instantly) so the reset is visible as motion -- the
 // next visitor sees the pattern actually settled at center, not just an
 // image that happens to reset the moment they touch it.
-const IDLE_RESET_MS = 5000; // TODO: testing value, restore to 20000 before shipping
+const IDLE_RESET_MS = 20000;
+const IDLE_CHECK_MS = 500;
 const DRIFT_DURATION_MS = 1400;
-let idleTimer = null;
 let driftAnimId = null;
+let lastActivityAt = performance.now();
+let driftedSinceActivity = false;
 
 function cancelDrift() {
   if (driftAnimId !== null) {
@@ -292,6 +570,8 @@ function easeInOutQuad(t) {
 }
 
 function driftToCenter() {
+  dbg.drifts++;
+  dbgEvent('drift to center');
   const startX = pan.x, startY = pan.y;
   const targetX = SRC_SIZE / 2, targetY = SRC_SIZE / 2;
   const startTime = performance.now();
@@ -301,9 +581,12 @@ function driftToCenter() {
     const e = easeInOutQuad(t);
     pan.x = startX + (targetX - startX) * e;
     pan.y = startY + (targetY - startY) * e;
-    drawKaleidoscope();
-    updateMatch();
-    updateCursorDotPosition();
+    // Named in the readout because this loop overwrites pan on every frame; if
+    // it is running when it should not be, it looks exactly like movement being
+    // dragged back to a fixed point.
+    dbg.driftFrames++;
+    dbg.lastHandler = 'DRIFT (overwriting pan)';
+    renderNow();
     if (t < 1) {
       driftAnimId = requestAnimationFrame(step);
     } else {
@@ -313,11 +596,28 @@ function driftToCenter() {
   driftAnimId = requestAnimationFrame(step);
 }
 
-function scheduleIdleReset() {
-  clearTimeout(idleTimer);
-  idleTimer = setTimeout(driftToCenter, IDLE_RESET_MS);
+// Idleness is measured against a timestamp polled twice a second, rather than a
+// timeout torn down and recreated on every single pointer event.
+function noteActivity() {
+  lastActivityAt = performance.now();
+  driftedSinceActivity = false;
 }
-scheduleIdleReset();
+
+// Any pointer activity in the window counts, not only movement over the circle.
+// The stage is a disc inside a square box, so passing through its corners -- or
+// over the page around it -- fired no stage pointermove at all, and the view
+// would drift back to center while the user was still moving the mouse.
+['pointermove', 'pointerdown', 'wheel', 'keydown'].forEach(type => {
+  window.addEventListener(type, noteActivity, { passive: true });
+});
+
+setInterval(() => {
+  if (driftedSinceActivity || driftAnimId !== null) return;
+  if (performance.now() - lastActivityAt >= IDLE_RESET_MS) {
+    driftedSinceActivity = true; // one drift per idle stretch, not one per check
+    driftToCenter();
+  }
+}, IDLE_CHECK_MS);
 
 /* ---------- 4. Pattern matching: drives the ring's color/glow and the hidden word ---------- */
 const PATTERNS = [
@@ -363,7 +663,6 @@ function setCursorDotColor(hex) {
   cursorColor = hex;
   cursorDot.style.background = hex;
   cursorDot.style.boxShadow = `0 0 0 2px rgba(0,0,0,0.55), 0 0 10px ${hex}`;
-  if (!pointerLocked) applyCssCursor(hex);
 }
 
 function setActivePattern(pattern) {
@@ -434,8 +733,29 @@ function updateMatch() {
 updateMatch();
 
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+  // updateViaCache: 'none' stops the browser serving sw.js itself out of its
+  // HTTP cache, which is what let a stale worker survive repeated relaunches.
+  // update() then forces a check on every launch rather than waiting for the
+  // browser's own schedule -- this runs as a kiosk, so it is never reloaded by
+  // hand and would otherwise sit on one build indefinitely.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloadedForUpdate = false;
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // A new worker took over, so the page now in front of us is the old one.
+    // Only on an update, never on the first install, which would loop.
+    if (!hadController || reloadedForUpdate) return;
+    reloadedForUpdate = true;
+    location.reload();
+  });
+
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+      .then(reg => reg.update())
+      .catch(() => {});
+  });
 }
+
 </script>
 </body>
 </html>
