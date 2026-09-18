@@ -167,7 +167,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b26';
+const BUILD = 'b27';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -220,6 +220,8 @@ setInterval(() => {
 
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves + '   buttons ' + dbg.buttons,
     'anchor    ' + Math.round(anchor.x) + ', ' + Math.round(anchor.y) + '   cap ' + Math.round(MAX_ANCHOR),
+    'slack     ' + Math.round(slack.x) + ', ' + Math.round(slack.y)
+                 + (slackAnimId !== null ? '   gliding' : ''),
     'movement  ' + dbg.mvx + ', ' + dbg.mvy,
     'client    ' + Math.round(dbg.clientX) + ', ' + Math.round(dbg.clientY),
     'pan       ' + Math.round(pan.x) + ', ' + Math.round(pan.y),
@@ -391,6 +393,73 @@ function baseFromEvent(e) {
   };
 }
 
+// The anchor cannot carry more than MAX_ANCHOR, but a drift can easily need
+// more: the offset it asks for is (centre - pointer), and the pointer is
+// gain-mapped, so at the edge of the screen it wants 720 against a cap of 270.
+// b26 dropped that remainder, and dropping it is what made the view jump on the
+// first movement after a drift.
+//
+// It is held in slack instead. At the instant movement resumes, anchor + slack
+// together come to exactly what the drift asked for, so there is nothing to
+// jump; the slack then eases to zero over a few hundred milliseconds and the
+// mapping settles onto the pointer. The displacement still has to go -- the cap
+// is what keeps the rim reachable, and it is not negotiable -- but it leaves as
+// visible motion rather than as a discontinuity.
+// Scaled to the distance, so a small correction is quick and a full-screen one
+// is not a lurch. A fixed duration made the two feel like different bugs.
+const SLACK_GLIDE_MIN_MS = 220;
+const SLACK_GLIDE_MAX_MS = 900;
+const SLACK_GLIDE_PER_UNIT_MS = 0.9;
+let slackGlideMs = SLACK_GLIDE_MIN_MS;
+let slack = { x: 0, y: 0 };
+let slackFrom = { x: 0, y: 0 };
+let slackStart = 0;
+let slackAnimId = null;
+
+function cancelSlackGlide() {
+  if (slackAnimId !== null) {
+    cancelAnimationFrame(slackAnimId);
+    slackAnimId = null;
+  }
+}
+
+// Guarded against restarting: called from the move handler, which fires many
+// times a second, so re-seeding it per event would hold the glide at its start
+// forever and the slack would never actually leave.
+function startSlackGlide() {
+  if (slackAnimId !== null) return;
+  if (slack.x === 0 && slack.y === 0) return;
+  slackFrom = { x: slack.x, y: slack.y };
+  slackGlideMs = Math.min(SLACK_GLIDE_MAX_MS,
+    SLACK_GLIDE_MIN_MS + Math.hypot(slack.x, slack.y) * SLACK_GLIDE_PER_UNIT_MS);
+  slackStart = performance.now();
+  slackAnimId = requestAnimationFrame(slackStep);
+}
+
+function slackStep(now) {
+  const t = Math.min(1, (now - slackStart) / slackGlideMs);
+  const k = 1 - easeInOutQuad(t);
+  slack.x = slackFrom.x * k;
+  slack.y = slackFrom.y * k;
+  applyMapping();
+  if (t < 1) {
+    slackAnimId = requestAnimationFrame(slackStep);
+  } else {
+    slackAnimId = null;
+    slack.x = 0;
+    slack.y = 0;
+  }
+}
+
+// The single place pan is derived from the pointer. The move handler and the
+// slack glide both go through it, so they cannot disagree about the mapping.
+function applyMapping() {
+  pan.x = lastBase.x + anchor.x + slack.x;
+  pan.y = lastBase.y + anchor.y + slack.y;
+  clampPanToCircle();
+  requestDraw();
+}
+
 function capAnchor() {
   const dist = Math.hypot(anchor.x, anchor.y);
   if (dist > MAX_ANCHOR) {
@@ -503,8 +572,8 @@ window.addEventListener('pointermove', e => {
   anchor.x *= keep;
   anchor.y *= keep;
 
-  pan.x = base.x + anchor.x;
-  pan.y = base.y + anchor.y;
+  applyMapping();
+  startSlackGlide(); // no-op unless a drift left a remainder behind
   trackMove();
 });
 
@@ -531,6 +600,7 @@ function easeInOutQuad(t) {
 }
 
 function driftToCenter() {
+  cancelSlackGlide(); // the drift sets anchor and slack itself, every frame
   dbg.drifts++;
   dbgEvent('drift to center');
   const startX = pan.x, startY = pan.y;
@@ -546,9 +616,15 @@ function driftToCenter() {
     // interrupted at any point, and this way the pointer's physical spot
     // already means "here" whenever movement resumes. Capped on the spot, so
     // the rim it points away from stays within the pointer's reach.
-    anchor.x = pan.x - lastBase.x;
-    anchor.y = pan.y - lastBase.y;
+    const wantX = pan.x - lastBase.x;
+    const wantY = pan.y - lastBase.y;
+    anchor.x = wantX;
+    anchor.y = wantY;
     capAnchor();
+    // Whatever the cap refused is not thrown away, it is parked in slack, so
+    // anchor + slack still add up to the drift's full displacement.
+    slack.x = wantX - anchor.x;
+    slack.y = wantY - anchor.y;
     renderNow();
     if (t < 1) {
       driftAnimId = requestAnimationFrame(step);
