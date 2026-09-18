@@ -78,7 +78,6 @@
     box-shadow: 0 0 0 2px rgba(0,0,0,0.55), 0 0 10px rgba(255,138,61,0.9);
     pointer-events: none;
     z-index: 4;
-    display: none;
   }
 
   /* Build stamp. The service worker can serve a page from cache, so "is the
@@ -172,7 +171,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b29';
+const BUILD = 'b30';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
