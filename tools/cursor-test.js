@@ -79,6 +79,20 @@ const dotScale = () => {
   const m = (app.els.cursorDot.style.transform || '').match(/scale\(([\d.]+)\)/);
   return m ? Number(m[1]) : null;
 };
+const dotColour = () => app.els.cursorDot.style.background || '-';
+
+// The dot breathes while it is being pushed, so its scale is only meaningful
+// as a range sampled over time rather than as a single reading.
+function scaleRange(ms) {
+  let lo = Infinity, hi = -Infinity;
+  for (let t = 0; t < ms; t += 80) {
+    app.advance(80);
+    const v = dotScale();
+    if (v !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  }
+  return { lo, hi };
+}
+
 const standAt = off => { app.move(450, 450 + off); app.advance(150); };
 
 console.log('\n  offset   rim push   dot scale');
@@ -100,7 +114,15 @@ check('no push while the pointer is still within the disc',
 check('partial push part way past the rim',
   part.push > 0.2 && part.push < 0.8, String(part.push));
 check('saturates when pushed hard', hard.push === 1, String(hard.push));
-check('the dot grows with the push', hard.scale > 1.5, 'scale ' + hard.scale);
+// Bloat is capped well under double, and the breath is shallow and slow.
+standAt(450);
+const range = scaleRange(3000);
+check('the dot grows, but not by much, and never past the cap',
+  range.hi > 1.2 && range.hi <= 1.52, 'peaks at ' + range.hi.toFixed(2));
+check('and breathes gently rather than blinking',
+  range.hi - range.lo > 0.02 && range.hi - range.lo < 0.15,
+  'swings ' + (range.hi - range.lo).toFixed(3) + ' over 3s');
+check('and turns red when pushed hard', /^#[ef]/i.test(dotColour()), dotColour());
 standAt(0);
 check('and returns to normal back inside', dotScale() === 1 && push() === 0,
   'scale ' + dotScale() + ', push ' + push());

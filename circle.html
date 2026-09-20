@@ -211,7 +211,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b43';
+const BUILD = 'b44';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -579,18 +579,58 @@ const cursorDot = document.getElementById('cursorDot');
 function updateCursorDotPosition() {
   cursorDot.style.left = (pan.x / SRC_SIZE) * 100 + '%';
   cursorDot.style.top = (pan.y / SRC_SIZE) * 100 + '%';
-  applyDotPush();
+  ensureRimPulse(performance.now());
+}
+
+function mixHex(from, to, t) {
+  const a = parseInt(from.slice(1), 16), b = parseInt(to.slice(1), 16);
+  const ch = sh => {
+    const v = Math.round((((a >> sh) & 255) * (1 - t)) + (((b >> sh) & 255) * t));
+    return (v < 16 ? '0' : '') + v.toString(16);
+  };
+  return '#' + ch(16) + ch(8) + ch(0);
 }
 
 // Scale rather than size, so it grows about its own centre and stays exactly on
-// the rim; the halo widens with it so the cue carries at arm's length.
-function applyDotPush() {
-  if (rimPush === dotPushApplied) return;
-  dotPushApplied = rimPush;
+// the rim; the halo widens with it so the cue carries at arm's length, and the
+// colour walks toward red because the clue colours all mean "warmer, keep
+// going" and this means the opposite.
+//
+// The breath is slow and shallow on purpose. It has to be noticeable while
+// someone is pressing into the edge and invisible the moment they are not, so
+// it is scaled by rimPush and stops dead at zero.
+function applyDotPush(now) {
   const hex = cursorColor || DEFAULT_CURSOR_COLOR;
-  cursorDot.style.transform = 'scale(' + (1 + rimPush * 0.85).toFixed(3) + ')';
+  if (rimPush <= 0) {
+    if (dotPushApplied === 0) return;
+    dotPushApplied = 0;
+    cursorDot.style.transform = 'scale(1)';
+    cursorDot.style.background = hex;
+    cursorDot.style.boxShadow = '0 0 0 2px rgba(0,0,0,0.55), 0 0 10px ' + hex;
+    return;
+  }
+  dotPushApplied = rimPush;
+  const wave = 0.5 - 0.5 * Math.sin((now || 0) / RIM_PULSE_MS * Math.PI * 2); // 0 at the top
+  const breath = 1 - RIM_PULSE_DEPTH * rimPush * wave;
+  const colour = mixHex(hex, RIM_COLOR, rimPush);
+  cursorDot.style.transform = 'scale(' + ((1 + rimPush * RIM_PUSH_SCALE) * breath).toFixed(3) + ')';
+  cursorDot.style.background = colour;
   cursorDot.style.boxShadow = '0 0 0 2px rgba(0,0,0,0.55), 0 0 '
-    + Math.round(10 + rimPush * 22) + 'px ' + hex;
+    + Math.round(10 + rimPush * RIM_PUSH_GLOW) + 'px ' + colour;
+}
+
+// Someone holding against the edge sends no further events, so the breath needs
+// a loop of its own. It exists only while there is a push to show.
+let rimAnimId = null;
+function rimPulseStep(now) {
+  applyDotPush(now);
+  rimAnimId = rimPush > 0 ? requestAnimationFrame(rimPulseStep) : null;
+  if (rimAnimId === null) applyDotPush(now);
+}
+
+function ensureRimPulse(now) {
+  applyDotPush(now);
+  if (rimPush > 0 && rimAnimId === null) rimAnimId = requestAnimationFrame(rimPulseStep);
 }
 
 // The dot marks pan, which is clamped to the disc; the OS cursor marks where
@@ -693,6 +733,14 @@ function applyMapping(base) {
 // bars. The dot swells and brightens instead, so the stillness reads as the edge
 // of the picture rather than as a fault, and there is no reason to keep going.
 const RIM_PUSH_FULL = 110;    // source units of overshoot for the full effect
+const RIM_PUSH_SCALE = 0.51;  // how much bigger the dot gets at full push
+const RIM_PUSH_GLOW = 14;     // extra px of halo at full push
+const RIM_COLOR = '#ff4438'; // what it turns into: a stop signal, not a clue colour
+const RIM_PULSE_MS = 2600;    // one breath, slow enough not to nag
+// The breath goes downward from the full size rather than either side of it, so
+// RIM_PUSH_SCALE stays the actual maximum rather than a figure the pulse
+// overshoots by six percent.
+const RIM_PULSE_DEPTH = 0.08; // how far it sinks at the bottom of a breath
 let rimPush = 0;
 
 function clampPanToCircle() {
@@ -1220,7 +1268,7 @@ function setCursorDotColor(hex) {
   cursorColor = hex;
   cursorDot.style.background = hex;
   dotPushApplied = -1;        // the halo carries the colour, so it must be redrawn
-  applyDotPush();
+  applyDotPush(performance.now());
   if (cursorHidden !== true) applyCssCursor(hex); // never un-hide it mid-circle
 }
 
