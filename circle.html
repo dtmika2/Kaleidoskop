@@ -171,7 +171,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b30';
+const BUILD = 'b31';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -364,17 +364,32 @@ function updateCursorDotPosition() {
 // moment the pointer leaves the disc -- which is also the only time it says
 // anything the dot cannot.
 let cursorHidden = null;
+// The OS cursor stays hidden for a margin past the rim as well, not just inside
+// it. Crossing the edge is not a moment worth marking: the dot is already
+// pinned to the rim there and the view has stopped moving, so handing back a
+// second cursor the instant the pointer leaves only draws the eye to the seam.
+// Ten percent is enough to cover the overshoot of an ordinary push at the edge.
+const CURSOR_HIDE_MARGIN = 1.1;
+
 function updateCursorVisibility(e) {
   const rect = stage.getBoundingClientRect();
   const dx = e.clientX - (rect.left + rect.width / 2);
   const dy = e.clientY - (rect.top + rect.height / 2);
-  const inside = Math.hypot(dx, dy) <= rect.width / 2;
+  const inside = Math.hypot(dx, dy) <= (rect.width / 2) * CURSOR_HIDE_MARGIN;
   if (inside === cursorHidden) return;
   cursorHidden = inside;
-  // Only the stage needs touching: anywhere inside the circle is inside its box
-  // too, and the page around it never had a cursor of ours to begin with.
-  if (inside) stage.style.cursor = 'none';
-  else applyCssCursor(cursorColor || DEFAULT_CURSOR_COLOR);
+  // Both the stage and the body, because the margin reaches outside the stage:
+  // the circle is inscribed in its box, so at 1.1 radii the halo pokes past the
+  // box edge at top, bottom, left and right, where the stage's own cursor rule
+  // no longer applies. The corners of the box sit at 1.41 radii and so stay
+  // outside the halo, which is where the OS cursor is wanted anyway.
+  if (inside) {
+    stage.style.cursor = 'none';
+    document.body.style.cursor = 'none';
+  } else {
+    applyCssCursor(cursorColor || DEFAULT_CURSOR_COLOR);
+    document.body.style.cursor = '';
+  }
 }
 
 function applyCssCursor(hex) {

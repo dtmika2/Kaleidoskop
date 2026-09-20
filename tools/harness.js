@@ -95,7 +95,7 @@ function install(code) {
   new Function(code).call(window);
 
   const api = {
-    els, listeners,
+    els, listeners, document,
     get now() { return T; },
     advance(ms, step = 16) {
       for (let done = 0; done < ms; done += step) {
