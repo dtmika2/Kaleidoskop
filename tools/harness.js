@@ -89,7 +89,20 @@ function install(code) {
   global.clearTimeout = () => {};
   global.matchMedia = window.matchMedia;
   global.getComputedStyle = () => ({ fontSize: '40px' });
-  global.Image = function () { return { set src(v) {}, onload: null }; };
+  // Images stay unloaded until a test asks for them. Loading is a real event in
+  // the browser and code is entitled to behave differently before it happens, so
+  // the default is the unloaded state and loadImages() is the explicit step --
+  // which also means a test can assert what the app does while a picture is
+  // still missing.
+  const pendingImages = [];
+  global.Image = function () {
+    const img = { naturalWidth: 600, naturalHeight: 500, onload: null, onerror: null, _src: "" };
+    Object.defineProperty(img, "src", {
+      get() { return img._src; },
+      set(v) { img._src = v; pendingImages.push(img); },
+    });
+    return img;
+  };
   global.location = { reload() {} };
 
   new Function(code).call(window);
@@ -115,6 +128,17 @@ function install(code) {
         fn({ clientX: x, clientY: y, pointerType: 'mouse', pointerId: 1 }));
     },
     openReadout() { (listeners.window.keydown || []).forEach(fn => fn({ key: 'd' })); },
+    // Fire onload for every image whose src has been set since the last call.
+    // Pass a list of substrings to fail instead, as a 404 would.
+    loadImages(failing = []) {
+      const batch = pendingImages.splice(0);
+      for (const img of batch) {
+        const broken = failing.some(f => img.src.includes(f));
+        const fn = broken ? img.onerror : img.onload;
+        if (typeof fn === "function") fn.call(img);
+      }
+      return batch.map(i => i.src);
+    },
     line(key) {
       const txt = els.debugPanel.textContent || '';
       return (txt.split('\n').find(l => l.startsWith(key)) || (key + ' -')).trim();

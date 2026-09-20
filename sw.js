@@ -1,8 +1,12 @@
-const CACHE_NAME = 'kaleidoskop-v35';
+const CACHE_NAME = 'kaleidoskop-v36';
 const PRECACHE_URLS = [
   'circle.html',
   'install/index.html',
   '4ElementalCorners.png',
+  'Obrazce/zrcadlo.png',
+  'Obrazce/jeskyne.png',
+  'Obrazce/spirala.png',
+  'Obrazce/kyvadlo.png',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',
