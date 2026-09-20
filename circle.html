@@ -188,7 +188,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b35';
+const BUILD = 'b36';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -737,7 +737,10 @@ refreshTargets(); // identity until the first idle reset, but never undefined
 // drawing in the alpha channel), so it can be filled with the pattern colour the
 // same way the letters are, and carries the same glow.
 const CLUE_BOX = 0.52;        // share of the disc the square art box spans
-const CLUE_LEVELS = 16;       // steps from the first letter to the last
+// Steps from the first letter to the last. Sixteen was inherited from the 4x4
+// Bayer matrix that used to supply the thresholds; nothing needs it now, and at
+// a third of the shard size sixteen steps uncovered too much at once.
+const CLUE_LEVELS = 48;
 // The letters carry four shadows and only one is the coloured glow; the other
 // three are black, and they are what lifts the word off a moving kaleidoscope.
 // b32 baked the glow alone, which on thin line art comes to almost nothing.
@@ -780,7 +783,7 @@ const MAX_CLUE_PX = 700;      // same bargain as MAX_CANVAS_PX: sharpness nobody
 // place in that order -- so level L uncovers exactly L/16 of them however the
 // noise fell. Clumped in appearance, even in pace, and the pace is what keeps
 // it in step with the letters.
-const CLUE_SHARD = 15;        // average shard across, in CSS px
+const CLUE_SHARD = 7;         // average shard across, in CSS px
 const CLUE_SEED_JITTER = 0.8; // 0 pins every seed to its slot centre, 1 lets it reach the edge
 const CLUE_MASK_STEP = 2;     // mask resolution in CSS px -- how finely a shard edge is cut
 const CLUE_LATTICE = 5;       // shards per noise step -- bigger, slower-drifting clouds

@@ -25,8 +25,13 @@ mod._compile(convSrc, mod.filename);
 const { decode, encode } = mod.exports;
 
 const W = 420, H = 420, SCALE = 1;
-const PAD = 34, CELL = 6, LEVELS = 16;
-const LATTICE = 5, SPLATTER = 0.38, SHARD = 15, JITTER = 0.8, MASK_STEP = 2;
+const PAD = 34;
+// Overridable from the environment so the knobs can be compared side by side
+// without editing anything: LEVELS=48 SHARD=7 node tools/clue-preview.js ...
+const num = (name, dflt) => (process.env[name] === undefined ? dflt : Number(process.env[name]));
+const LEVELS = num('LEVELS', 16);
+const LATTICE = num('LATTICE', 5), SPLATTER = num('SPLATTER', 0.38);
+const SHARD = num('SHARD', 15), JITTER = num('JITTER', 0.8), MASK_STEP = num('MASK_STEP', 2);
 
 // Same field as circle.html: Voronoi shards around jittered seeds, arrival
 // order from smooth noise, rank-normalised.
@@ -158,4 +163,5 @@ const level = Math.max(1, Math.min(LEVELS, Number(process.argv[2]) || LEVELS));
 const out = process.argv[3] || 'clue-preview.png';
 const mode = process.argv[4] === 'noshadow' ? 'noshadow' : 'shadow';
 fs.writeFileSync(out, render(level, mode !== 'noshadow'));
-console.log('wrote ' + out + '   level ' + level + '/' + LEVELS + '   ' + mode);
+console.log('wrote ' + out + '   level ' + level + '/' + LEVELS
+  + '   shard ' + SHARD + '   ' + mode);

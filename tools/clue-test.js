@@ -22,8 +22,11 @@ const mod = v => ((v % 900) + 900) % 900;
 // proximity is 1 - dist/500, so these are the distances the thresholds sit at.
 const REVEAL_START_DIST = 50;   // proximity 0.90, first two letters
 const REVEAL_FULL_DIST = 10;    // proximity 0.98, whole word
-const LEVELS = 16;
 const WORD_LEN = 7;
+// Read back from the readout rather than repeated here: how many steps the
+// reveal is cut into is a tuning decision, and a test that hardcodes it fails
+// on a change that is not a fault.
+let LEVELS = 0;
 
 // The debug panel repaints on a 100ms interval, so anything that reads a line
 // back has to give it more than that or it reads the previous position.
@@ -73,6 +76,8 @@ check('a dead-on approach with nothing loaded still works',
 // same batch; only the clue art is this file's business.
 const clueSrcs = app.loadImages().filter(s => s.startsWith('Obrazce/'));
 app.advance(SETTLE_MS);
+LEVELS = clue().levels;
+check('the reveal is cut into a sane number of steps', LEVELS >= WORD_LEN && LEVELS <= 256, LEVELS + ' steps');
 check('all four clue pictures requested up front', clueSrcs.length === 4, clueSrcs.join(' '));
 check('paths are ASCII under Obrazce/',
   clueSrcs.every(s => /^Obrazce\/[a-z]+\.png$/.test(s)), clueSrcs.join(' '));
