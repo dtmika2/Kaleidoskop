@@ -57,7 +57,7 @@
        down by the height of the bar. A proportion holds still when both bars
        appear together, and is out by only half the difference when one does. */
     left: 50%;
-    top: 50%;
+    top: 50%;              /* overwritten in px by positionStage */
     transform: translate(-50%, -50%);
   }
   .stage {
@@ -211,7 +211,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b41';
+const BUILD = 'b42';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -233,16 +233,18 @@ const dbg = {
 // Top, right, bottom, left, as the browser reports them. Guarded because a
 // stripped-down getComputedStyle -- the test harness has one -- has no
 // getPropertyValue, and the readout is not worth throwing over.
-function safeAreaInsets() {
+function safeArea(side) {
   try {
     const cs = getComputedStyle(document.documentElement);
-    if (!cs || typeof cs.getPropertyValue !== 'function') return '-';
-    return ['top', 'right', 'bottom', 'left']
-      .map(side => (cs.getPropertyValue('--sa-' + side) || '?').trim())
-      .join('  ');
+    if (!cs || typeof cs.getPropertyValue !== 'function') return '0px';
+    return (cs.getPropertyValue('--sa-' + side) || '0px').trim();
   } catch (err) {
-    return '-';
+    return '0px';
   }
+}
+
+function safeAreaInsets() {
+  return ['top', 'right', 'bottom', 'left'].map(safeArea).join('  ');
 }
 
 // Everything that could describe where the page has been put, in one line.
@@ -299,7 +301,9 @@ setInterval(() => {
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves + '   buttons ' + dbg.buttons,
     'viewport  ' + viewportLine(),
     'latched   ' + (latched ? latched.vmin : '-')
-                 + '   wrap ' + (stageWrap.style.width || '-'),
+                 + '   fullH ' + (latched ? latched.fullH : '-')
+                 + '   top ' + (stageWrap.style.top || '-')
+                 + '   via ' + insetSource,
     'rim       push ' + rimPush.toFixed(2),
     'clue      ' + (cluePattern ? cluePattern.image : '-')
                  + '   level ' + clueLevel + '/' + CLUE_LEVELS
@@ -419,8 +423,48 @@ const MAX_CANVAS_PX = 1400;
 // real rather than a bar passing through. A bar revealing itself now changes
 // nothing at all: it simply covers the top of a page that has not moved.
 const LAYOUT_SETTLE_MS = 1500;
-let latched = null;           // { vmin, landscape }
+let latched = null;           // { vmin, landscape, fullH }
 let shrinkSince = 0;
+
+// Measured on the tablet: the viewport really does shrink when a bar appears,
+// 853 tall down to 775, so viewport-fit=cover is not being honoured and the page
+// is still laid out inside the bars. Width does not move, so the circle keeps
+// its size; only where it sits changes.
+//
+// Centred as a proportion, the circle lands at (top inset) + (remaining
+// height)/2, which is off by (total inset)/2 - (top inset) -- around fifteen
+// pixels up for a 24px status bar and a 54px navigation bar. Halved, but not
+// gone. To cancel it exactly the top inset has to be known on its own, and the
+// total is all the viewport gives us.
+//
+// Three ways to learn it, best first. The assumed share is only reached if the
+// platform reports nothing at all, and it is visible in the readout so a wrong
+// guess can be seen rather than felt.
+const ASSUMED_TOP_SHARE = 0.31;   // a 24px status bar against a 78px total
+let insetSource = '-';
+
+function topInset(total) {
+  const sa = parseFloat(safeArea('top'));
+  if (sa > 0) { insetSource = 'safe-area'; return sa; }
+  const sy = window.screenY;
+  if (typeof sy === 'number' && sy > 0) { insetSource = 'screenY'; return sy; }
+  insetSource = total > 0 ? 'assumed' : 'none';
+  return total * ASSUMED_TOP_SHARE;
+}
+
+// Put the circle at the same place on the screen whatever the bars are doing:
+// its centre belongs at half the un-inset height, which sits that far minus the
+// top inset down from the top of the viewport we have been given.
+function positionStage() {
+  if (!latched) return;
+  const total = Math.max(0, latched.fullH - window.innerHeight);
+  const top = latched.fullH / 2 - topInset(total);
+  stageWrap.style.top = Math.round(top) + 'px';
+}
+
+function flippedFrom(landscape) {
+  return !latched || latched.landscape !== landscape;
+}
 
 function latchLayout(force) {
   const vw = window.innerWidth, vh = window.innerHeight;
@@ -440,11 +484,15 @@ function latchLayout(force) {
     }
   }
   shrinkSince = 0;
-  latched = { vmin, landscape };
+  // fullH is the tallest viewport seen in this orientation -- the one with no
+  // bars over it, which is what the circle should stay centred in.
+  const fullH = latched && !flippedFrom(landscape) ? Math.max(latched.fullH, vh) : vh;
+  latched = { vmin, landscape, fullH };
 
   const size = Math.round(vmin * 0.94);
   stageWrap.style.width = size + 'px';
   stageWrap.style.height = size + 'px';
+  positionStage();
   dbgEvent('layout ' + size + 'px');
 }
 
@@ -463,6 +511,12 @@ function resizeCanvas() {
 // nothing beyond the check.
 function onViewportChange(force) {
   latchLayout(force);
+  // Even when the latch declines to adopt a transient shrink, the circle still
+  // has to be pushed back to where it was -- that is the whole point.
+  if (latched) {
+    latched.fullH = Math.max(latched.fullH, window.innerHeight);
+    positionStage();
+  }
   resizeCanvas();
   resizeClue();
 }

@@ -77,6 +77,52 @@ app.orient(W, H);
 app.advance(100);
 check('and back again', box() === settled, box());
 
+
+// --- holding position on the screen while a bar comes and goes ---------------
+// Size is only half of it. The viewport really does shrink when a bar appears
+// (measured on the tablet: 533x853 becomes 533x775), so anything centred in the
+// viewport moves by half the difference between the top and bottom insets. The
+// circle has to stay where it is on the SCREEN, which is the viewport position
+// plus however far the viewport itself has been pushed down.
+const W2 = 533, FULL = 853, IN_TOP = 24, IN_BOTTOM = 54;
+const WITH_BARS = FULL - IN_TOP - IN_BOTTOM;
+const screenCentre = inset => parseFloat(wrap.style.top) + inset;
+
+console.log('');
+app.setSafeArea();
+app.resize(W2, FULL);
+app.advance(100);
+const base = screenCentre(0);
+
+app.setSafeArea({ top: IN_TOP, bottom: IN_BOTTOM });
+app.resize(W2, WITH_BARS);
+app.advance(100);
+const shown = screenCentre(IN_TOP);
+
+app.setSafeArea();
+app.resize(W2, FULL);
+app.advance(100);
+const back = screenCentre(0);
+
+check('the circle holds its place on screen while a bar shows',
+  Math.abs(shown - base) < 1, 'moved ' + Math.abs(shown - base).toFixed(1) + 'px');
+check('and is back where it started once it goes',
+  Math.abs(back - base) < 1, 'moved ' + Math.abs(back - base).toFixed(1) + 'px');
+
+// The same, with the platform reporting no insets at all -- which is what this
+// device does, so the assumed share is the path that actually runs on it.
+const blind = install(fs.readFileSync(process.argv[2], 'utf8'));
+const blindWrap = blind.els.stageWrap;
+blind.resize(W2, FULL);
+blind.advance(100);
+const blindBase = parseFloat(blindWrap.style.top);
+blind.resize(W2, WITH_BARS);
+blind.advance(100);
+const blindShown = parseFloat(blindWrap.style.top) + IN_TOP;
+check('and stays close even when no insets are reported',
+  Math.abs(blindShown - blindBase) < 6,
+  'moved ' + Math.abs(blindShown - blindBase).toFixed(1) + 'px on the assumed share');
+
 if (fails) {
   console.error('\n' + fails + ' check(s) failed');
   process.exit(1);

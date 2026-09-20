@@ -104,7 +104,17 @@ function install(code) {
   global.setTimeout = (fn, ms) => { timeouts.push({ fn, next: T + (ms || 0) }); return timeouts.length; };
   global.clearTimeout = () => {};
   global.matchMedia = window.matchMedia;
-  global.getComputedStyle = () => ({ fontSize: '40px' });
+  // A real browser answers getPropertyValue, and with viewport-fit=cover it
+  // reports the system bar insets through env(safe-area-inset-*). Without that
+  // here, nothing could test the code that reads them.
+  const safeArea = { top: 0, right: 0, bottom: 0, left: 0 };
+  global.getComputedStyle = () => ({
+    fontSize: '40px',
+    getPropertyValue: prop => {
+      const m = /^--sa-(top|right|bottom|left)$/.exec(String(prop).trim());
+      return m ? safeArea[m[1]] + 'px' : '';
+    },
+  });
   // Images stay unloaded until a test asks for them. Loading is a real event in
   // the browser and code is entitled to behave differently before it happens, so
   // the default is the unloaded state and loadImages() is the explicit step --
@@ -156,6 +166,14 @@ function install(code) {
       (listeners.window.orientationchange || []).forEach(fn => fn({}));
     },
     get viewport() { return { w: window.innerWidth, h: window.innerHeight }; },
+    // What the platform reports for env(safe-area-inset-*). Pass nothing to go
+    // back to reporting none, as a browser that ignores viewport-fit does.
+    setSafeArea(insets = {}) {
+      safeArea.top = insets.top || 0;
+      safeArea.right = insets.right || 0;
+      safeArea.bottom = insets.bottom || 0;
+      safeArea.left = insets.left || 0;
+    },
     openReadout() { (listeners.window.keydown || []).forEach(fn => fn({ key: 'd' })); },
     // Fire onload for every image whose src has been set since the last call.
     // Pass a list of substrings to fail instead, as a 404 would.
