@@ -84,6 +84,11 @@ function install(code) {
     addEventListener(type, fn) { listeners.document[type] = fn; },
   };
   const window = {
+    // A real window has a size, and code is entitled to read it during load.
+    // Without these, anything that measures the viewport silently no-ops and the
+    // suite reports success over a page that would throw in a browser.
+    innerWidth: 1280,
+    innerHeight: 800,
     devicePixelRatio: 2,
     addEventListener(type, fn) { (listeners.window[type] ||= []).push(fn); },
     matchMedia: () => ({ matches: false }),
@@ -138,6 +143,19 @@ function install(code) {
       (listeners.window.pointerdown || []).forEach(fn =>
         fn({ clientX: x, clientY: y, pointerType: 'mouse', pointerId: 1 }));
     },
+    // Change the viewport and tell the page, the way Android does when it
+    // reveals or hides a system bar.
+    resize(w, h) {
+      window.innerWidth = w;
+      window.innerHeight = h;
+      (listeners.window.resize || []).forEach(fn => fn({}));
+    },
+    orient(w, h) {
+      window.innerWidth = w;
+      window.innerHeight = h;
+      (listeners.window.orientationchange || []).forEach(fn => fn({}));
+    },
+    get viewport() { return { w: window.innerWidth, h: window.innerHeight }; },
     openReadout() { (listeners.window.keydown || []).forEach(fn => fn({ key: 'd' })); },
     // Fire onload for every image whose src has been set since the last call.
     // Pass a list of substrings to fail instead, as a 404 would.

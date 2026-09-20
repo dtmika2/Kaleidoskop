@@ -32,8 +32,12 @@
     justify-content: center;
   }
 
+  /* Sized and placed in pixels by JS rather than in vmin, and fixed rather than
+     flow-positioned, so that a transient change in viewport height moves
+     nothing. See latchLayout: when Android reveals a system bar the viewport
+     shrinks, and anything measured in vmin shrinks with it. */
   .stage-wrap {
-    position: relative;
+    position: fixed;
     width: 94vmin;
     height: 94vmin;
   }
@@ -188,7 +192,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b37';
+const BUILD = 'b38';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -328,6 +332,9 @@ function drawKaleidoscope() {
 
 /* ---------- 3. Hover handling: absolute position mapping, no drag needed ---------- */
 const stage = document.getElementById('stage');
+// Declared here rather than with the other pattern-matching elements further
+// down: latchLayout runs during load and sizes it, long before that section.
+const stageWrap = document.getElementById('stageWrap');
 
 // Keep the canvas's internal resolution matched to its displayed size (which
 // tracks 100vmin, so it fills to the edges on any device/orientation) times
@@ -341,6 +348,51 @@ const stage = document.getElementById('stage');
 // the pointer can ride on.
 const MAX_CANVAS_PX = 1400;
 
+// Android reveals its system bars when the pointer reaches the top or bottom of
+// the screen. Nothing in a web page can stop that. What a web page can stop is
+// making it worse: the viewport shrinks by the height of the bar, and until b38
+// every vmin in the layout shrank with it. The circle resized, the canvas was
+// reallocated at a new resolution and fully repainted, and the clue field was
+// rebuilt from scratch mid-reveal. The bar appearing for a moment read as the
+// whole app flickering and changing resolution, which is far more alarming than
+// a strip at the top of the screen.
+//
+// So the layout is latched. A size is adopted when the viewport grows, when the
+// orientation flips, or when a smaller viewport has persisted long enough to be
+// real rather than a bar passing through. A bar revealing itself now changes
+// nothing at all: it simply covers the top of a page that has not moved.
+const LAYOUT_SETTLE_MS = 1500;
+let latched = null;           // { vmin, landscape }
+let shrinkSince = 0;
+
+function latchLayout(force) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const vmin = Math.min(vw, vh);
+  if (!(vmin > 0)) return;
+  const landscape = vw >= vh;
+
+  if (latched && !force) {
+    const flipped = landscape !== latched.landscape;
+    if (vmin < latched.vmin && !flipped) {
+      // Smaller. Could be a bar, could be real -- wait and see.
+      if (!shrinkSince) shrinkSince = performance.now();
+      if (performance.now() - shrinkSince < LAYOUT_SETTLE_MS) return;
+    } else if (vmin === latched.vmin && !flipped) {
+      shrinkSince = 0;
+      return;
+    }
+  }
+  shrinkSince = 0;
+  latched = { vmin, landscape };
+
+  const size = Math.round(vmin * 0.94);
+  stageWrap.style.width = size + 'px';
+  stageWrap.style.height = size + 'px';
+  stageWrap.style.left = Math.round((vw - size) / 2) + 'px';
+  stageWrap.style.top = Math.round((vh - size) / 2) + 'px';
+  dbgEvent('layout ' + size + 'px');
+}
+
 function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const size = Math.min(MAX_CANVAS_PX, Math.round(stage.clientWidth * dpr));
@@ -350,8 +402,21 @@ function resizeCanvas() {
     drawKaleidoscope();
   }
 }
-window.addEventListener('resize', resizeCanvas);
-window.addEventListener('orientationchange', resizeCanvas);
+// latchLayout first: the canvas and the clue field both measure the stage, and
+// they must not read it mid-change. resizeCanvas and resizeClue each return
+// early when the size they read has not moved, so a bar passing through costs
+// nothing beyond the check.
+function onViewportChange(force) {
+  latchLayout(force);
+  resizeCanvas();
+  resizeClue();
+}
+window.addEventListener('resize', () => onViewportChange(false));
+window.addEventListener('orientationchange', () => onViewportChange(true));
+// A shrink that outlasts LAYOUT_SETTLE_MS fires no further resize event of its
+// own, so it needs looking at again rather than waiting to be told.
+setInterval(() => { if (shrinkSince) onViewportChange(false); }, 500);
+latchLayout(true);
 resizeCanvas();
 drawKaleidoscope();
 
@@ -982,7 +1047,6 @@ PATTERNS.forEach(p => {
 });
 
 const ring = document.getElementById('ring');
-const stageWrap = document.getElementById('stageWrap');
 const wordOverlay = document.getElementById('wordOverlay');
 let activePatternId = null; // which pattern's letters are currently rendered in the overlay
 
