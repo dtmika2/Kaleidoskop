@@ -26,42 +26,63 @@ const { decode, encode } = mod.exports;
 
 const W = 420, H = 420, SCALE = 1;
 const PAD = 34, CELL = 6, LEVELS = 16;
-const LATTICE = 5, SPLATTER = 0.38;
+const LATTICE = 5, SPLATTER = 0.38, SHARD = 15, JITTER = 0.8, MASK_STEP = 2;
 
-// Same field as circle.html: value noise over a coarse lattice, jittered, then
-// rank-normalised so level L uncovers exactly L/16 of the blocks.
-function buildField(cx, cy) {
-  const n = cx * cy;
-  const lx = Math.ceil(cx / LATTICE) + 2, ly = Math.ceil(cy / LATTICE) + 2;
+// Same field as circle.html: Voronoi shards around jittered seeds, arrival
+// order from smooth noise, rank-normalised.
+function buildField() {
+  const gx = Math.ceil(W / SHARD) + 1, gy = Math.ceil(H / SHARD) + 1, seeds = gx * gy;
+  const lx = Math.ceil(gx / LATTICE) + 2, ly = Math.ceil(gy / LATTICE) + 2;
   const lat = new Float32Array(lx * ly);
-  for (let i = 0; i < lat.length; i++) lat[i] = Math.random();
-  const val = new Float32Array(n);
-  for (let y = 0; y < cy; y++) for (let x = 0; x < cx; x++) {
-    const fx = x / LATTICE, fy = y / LATTICE;
+  for (let k = 0; k < lat.length; k++) lat[k] = Math.random();
+  const noise = (gxi, gyi) => {
+    const fx = gxi / LATTICE, fy = gyi / LATTICE;
     const x0 = Math.floor(fx), y0 = Math.floor(fy);
     const tx = fx - x0, ty = fy - y0;
     const sx = tx*tx*(3-2*tx), sy = ty*ty*(3-2*ty);
-    const a = lat[y0*lx+x0], b = lat[y0*lx+x0+1], c = lat[(y0+1)*lx+x0], d = lat[(y0+1)*lx+x0+1];
-    const smooth = a + (b-a)*sx + (c-a)*sy + (a-b-c+d)*sx*sy;
-    val[y*cx+x] = smooth * (1 - SPLATTER) + Math.random() * SPLATTER;
+    const a1 = lat[y0*lx+x0], b1 = lat[y0*lx+x0+1], c1 = lat[(y0+1)*lx+x0], d1 = lat[(y0+1)*lx+x0+1];
+    return a1 + (b1-a1)*sx + (c1-a1)*sy + (a1-b1-c1+d1)*sx*sy;
+  };
+  const sxA = new Float32Array(seeds), syA = new Float32Array(seeds), val = new Float32Array(seeds);
+  for (let j = 0; j < gy; j++) for (let i = 0; i < gx; i++) {
+    const k = j*gx+i;
+    sxA[k] = (i + 0.5 + (Math.random()-0.5)*JITTER) * SHARD;
+    syA[k] = (j + 0.5 + (Math.random()-0.5)*JITTER) * SHARD;
+    val[k] = noise(i, j) * (1-SPLATTER) + Math.random()*SPLATTER;
   }
-  const rank = new Float32Array(n);
+  const rank = new Float32Array(seeds);
   const idx = [...val.keys()];
-  idx.sort((i, j) => val[i] - val[j]);
-  idx.forEach((v, r) => { rank[v] = r / n; });
-  return rank;
+  idx.sort((p, q) => val[p] - val[q]);
+  idx.forEach((v, r) => { rank[v] = r / seeds; });
+
+  const mw = Math.ceil(W / MASK_STEP), mh = Math.ceil(H / MASK_STEP);
+  const owner = new Uint32Array(mw * mh);
+  for (let my = 0; my < mh; my++) {
+    const py = (my + 0.5) * MASK_STEP, cj = Math.min(gy-1, Math.floor(py / SHARD));
+    for (let mx = 0; mx < mw; mx++) {
+      const px = (mx + 0.5) * MASK_STEP, ci = Math.min(gx-1, Math.floor(px / SHARD));
+      let best = 0, bestD = Infinity;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const j = cj+dj, i = ci+di;
+        if (j < 0 || j >= gy || i < 0 || i >= gx) continue;
+        const k = j*gx+i, ddx = px - sxA[k], ddy = py - syA[k], d = ddx*ddx + ddy*ddy;
+        if (d < bestD) { bestD = d; best = k; }
+      }
+      owner[my*mw+mx] = best;
+    }
+  }
+  return { mw, mh, owner, rank };
 }
+const FIELD = buildField();
+
+// Mirrors CLUE_SHADOWS in circle.html.
 const SHADOWS = [
   { blur: 22, y: 10, c: [0,0,0], a: 0.85, times: 1 },
   { blur: 9,  y: 4,  c: [0,0,0], a: 0.95, times: 2 },
   { blur: 5,  y: 0,  c: [0,0,0], a: 1.0,  times: 3 },
   { blur: 26, y: 0,  c: [255,138,61], a: 0.55, times: 2 },
 ];
-const TINT = [255, 138, 61];
-
-// --- art fitted into the box, dithered, as an alpha field --------------------
-const CELLS_X = Math.ceil(W / CELL), CELLS_Y = Math.ceil(H / CELL);
-const rank = buildField(CELLS_X, CELLS_Y);
+const TINT = [255, 138, 61];   // Ohen / Zrcadlo
 
 function artAlpha(file, level) {
   const img = decode(path.join(ROOT, file));
@@ -72,8 +93,8 @@ function artAlpha(file, level) {
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const sx = Math.round((x - ox) / s), sy = Math.round((y - oy) / s);
     if (sx < 0 || sy < 0 || sx >= img.w || sy >= img.h) continue;
-    const bx = Math.floor(x / CELL), by = Math.floor(y / CELL);
-    if (rank[by * CELLS_X + bx] >= level / LEVELS) continue;   // not yet uncovered
+    const mk = Math.floor(y / MASK_STEP) * FIELD.mw + Math.floor(x / MASK_STEP);
+    if (FIELD.rank[FIELD.owner[mk]] >= level / LEVELS) continue;   // not yet uncovered
     a[y * W + x] = img.pixels[(sy * img.w + sx) * 4 + 3] / 255;
   }
   return a;

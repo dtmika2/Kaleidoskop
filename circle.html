@@ -188,7 +188,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b34';
+const BUILD = 'b35';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -737,8 +737,7 @@ refreshTargets(); // identity until the first idle reset, but never undefined
 // drawing in the alpha channel), so it can be filled with the pattern colour the
 // same way the letters are, and carries the same glow.
 const CLUE_BOX = 0.52;        // share of the disc the square art box spans
-const CLUE_DITHER_CELL = 6;   // CSS px per dither cell -- the knob for how coarse it reads
-const CLUE_LEVELS = 16;       // a 4x4 Bayer matrix has exactly 16 thresholds
+const CLUE_LEVELS = 16;       // steps from the first letter to the last
 // The letters carry four shadows and only one is the coloured glow; the other
 // three are black, and they are what lifts the word off a moving kaleidoscope.
 // b32 baked the glow alone, which on thin line art comes to almost nothing.
@@ -760,83 +759,128 @@ const CLUE_SHADOWS = [
 const CLUE_PAD = 34;
 const MAX_CLUE_PX = 700;      // same bargain as MAX_CANVAS_PX: sharpness nobody sees
 
-// Each square block gets a number saying how late it arrives, and a level
-// uncovers every block numbered below it. An ordered 4x4 matrix (b32, b33) made
-// those numbers a repeating lattice, which reveals as an even crosshatch --
-// tidy, and reading as a screen door rather than as anything appearing.
+// The picture is cut into shards, each with a number saying how late it
+// arrives; a level uncovers every shard numbered below it.
 //
-// The numbers now come from smooth value noise, so neighbouring blocks arrive at
-// similar times and the picture surfaces in drifting patches. CLUE_SPLATTER
-// mixes independent randomness back in, which ragged the edges of those patches
-// so they spatter rather than creep.
+// Until b35 the shards were squares on a fixed grid, and a grid is the first
+// thing the eye finds -- even with the arrival order clumped, every piece was
+// the same little square in the same row as its neighbours. They are now
+// Voronoi cells around scattered seeds: each shard an irregular polygon, no two
+// alike, with no row or column left to line them up.
 //
-// Then the field is rank-normalised: the blocks are sorted and renumbered by
-// their position in that order, so level L uncovers exactly L/16 of them however
-// the noise happened to fall. Clumped in appearance, even in pace.
-const CLUE_LATTICE = 5;       // blocks per noise lattice step -- bigger, softer clouds
+// The seeds sit on a grid but are thrown off it by CLUE_SEED_JITTER, which is
+// what makes the shards irregular while keeping them roughly one size. Staying
+// near their slots is also what makes this cheap: a pixel finds its shard by
+// checking the nine seeds around it rather than all nine hundred.
+//
+// The arrival numbers come from smooth value noise, so neighbouring shards
+// arrive at similar times and the picture surfaces in drifting patches;
+// CLUE_SPLATTER mixes independent randomness back in to fray the patch edges.
+// The field is then rank-normalised -- shards sorted and renumbered by their
+// place in that order -- so level L uncovers exactly L/16 of them however the
+// noise fell. Clumped in appearance, even in pace, and the pace is what keeps
+// it in step with the letters.
+const CLUE_SHARD = 15;        // average shard across, in CSS px
+const CLUE_SEED_JITTER = 0.8; // 0 pins every seed to its slot centre, 1 lets it reach the edge
+const CLUE_MASK_STEP = 2;     // mask resolution in CSS px -- how finely a shard edge is cut
+const CLUE_LATTICE = 5;       // shards per noise step -- bigger, slower-drifting clouds
 const CLUE_SPLATTER = 0.38;   // 0 = smooth clouds, 1 = pure static
-let clueField = null;         // { cell, cx, cy, order } in canvas pixels
+let clueField = null;         // { mw, mh, owner, rank }
 
 const clueCanvas = document.getElementById('clue');
 const clueCtx = clueCanvas.getContext('2d');
 const clueBuf = document.createElement('canvas');   // art is composed here, then glowed onto the visible one
 const clueBufCtx = clueBuf.getContext('2d');
-const clueMaskCanvas = document.createElement('canvas'); // one pixel per block
+const clueMaskCanvas = document.createElement('canvas'); // one pixel per mask step
 let clueScale = 1;            // canvas pixels per CSS pixel
 let cluePattern = null;
 let clueLevel = 0;
 let clueDrawn = '';           // what is actually on the canvas, so a redraw can be skipped
 
+// Smooth value noise over a coarse lattice.
+function latticeNoise(lat, lx, gx, gy) {
+  const fx = gx / CLUE_LATTICE, fy = gy / CLUE_LATTICE;
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const tx = fx - x0, ty = fy - y0;
+  const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+  const a = lat[y0 * lx + x0], b = lat[y0 * lx + x0 + 1];
+  const c = lat[(y0 + 1) * lx + x0], d = lat[(y0 + 1) * lx + x0 + 1];
+  return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+}
+
 function buildClueField() {
-  const cell = Math.max(2, Math.round(CLUE_DITHER_CELL * clueScale));
-  const cx = Math.ceil(clueCanvas.width / cell), cy = Math.ceil(clueCanvas.height / cell);
-  const n = cx * cy;
-  if (!(n > 0)) { clueField = null; return; }
+  const w = clueCanvas.width, h = clueCanvas.height;
+  const cell = Math.max(3, Math.round(CLUE_SHARD * clueScale));
+  const gx = Math.ceil(w / cell) + 1, gy = Math.ceil(h / cell) + 1;
+  const seeds = gx * gy;
+  if (!(w > 0) || !(seeds > 0)) { clueField = null; return; }
 
-  // A coarse random lattice, read back with smoothstep interpolation: cheap
-  // value noise, and all the clumping this needs.
-  const lx = Math.ceil(cx / CLUE_LATTICE) + 2, ly = Math.ceil(cy / CLUE_LATTICE) + 2;
+  const lx = Math.ceil(gx / CLUE_LATTICE) + 2, ly = Math.ceil(gy / CLUE_LATTICE) + 2;
   const lat = new Float32Array(lx * ly);
-  for (let i = 0; i < lat.length; i++) lat[i] = Math.random();
+  for (let k = 0; k < lat.length; k++) lat[k] = Math.random();
 
-  const val = new Float32Array(n);
-  for (let y = 0; y < cy; y++) {
-    for (let x = 0; x < cx; x++) {
-      const fx = x / CLUE_LATTICE, fy = y / CLUE_LATTICE;
-      const x0 = Math.floor(fx), y0 = Math.floor(fy);
-      const tx = fx - x0, ty = fy - y0;
-      const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
-      const a = lat[y0 * lx + x0], b = lat[y0 * lx + x0 + 1];
-      const c = lat[(y0 + 1) * lx + x0], d = lat[(y0 + 1) * lx + x0 + 1];
-      const smooth = a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
-      val[y * cx + x] = smooth * (1 - CLUE_SPLATTER) + Math.random() * CLUE_SPLATTER;
+  const seedX = new Float32Array(seeds), seedY = new Float32Array(seeds);
+  const val = new Float32Array(seeds);
+  for (let j = 0; j < gy; j++) {
+    for (let i = 0; i < gx; i++) {
+      const k = j * gx + i;
+      seedX[k] = (i + 0.5 + (Math.random() - 0.5) * CLUE_SEED_JITTER) * cell;
+      seedY[k] = (j + 0.5 + (Math.random() - 0.5) * CLUE_SEED_JITTER) * cell;
+      val[k] = latticeNoise(lat, lx, i, j) * (1 - CLUE_SPLATTER) + Math.random() * CLUE_SPLATTER;
     }
   }
 
-  // Rank-normalise, so the pace of the reveal does not depend on how the noise
-  // happened to fall.
-  const rank = new Float32Array(n);
-  const idx = new Array(n);
-  for (let i = 0; i < n; i++) idx[i] = i;
-  idx.sort((i, j) => val[i] - val[j]);
-  for (let r = 0; r < n; r++) rank[idx[r]] = r / n;
+  const rank = new Float32Array(seeds);
+  const idx = new Array(seeds);
+  for (let k = 0; k < seeds; k++) idx[k] = k;
+  idx.sort((p, q) => val[p] - val[q]);
+  for (let r = 0; r < seeds; r++) rank[idx[r]] = r / seeds;
 
-  clueField = { cell, cx, cy, rank };
+  // Which shard owns each mask pixel. Only the nine seeds around it can win,
+  // since none has strayed beyond its own slot.
+  const step = Math.max(1, Math.round(CLUE_MASK_STEP * clueScale));
+  const mw = Math.ceil(w / step), mh = Math.ceil(h / step);
+  const owner = new Uint32Array(mw * mh);
+  for (let my = 0; my < mh; my++) {
+    const py = (my + 0.5) * step;
+    const cj = Math.min(gy - 1, Math.floor(py / cell));
+    for (let mx = 0; mx < mw; mx++) {
+      const px = (mx + 0.5) * step;
+      const ci = Math.min(gx - 1, Math.floor(px / cell));
+      let best = 0, bestD = Infinity;
+      for (let dj = -1; dj <= 1; dj++) {
+        const j = cj + dj;
+        if (j < 0 || j >= gy) continue;
+        for (let di = -1; di <= 1; di++) {
+          const i = ci + di;
+          if (i < 0 || i >= gx) continue;
+          const k = j * gx + i;
+          const ddx = px - seedX[k], ddy = py - seedY[k];
+          const d = ddx * ddx + ddy * ddy;
+          if (d < bestD) { bestD = d; best = k; }
+        }
+      }
+      owner[my * mw + mx] = best;
+    }
+  }
+
+  clueField = { mw, mh, owner, rank };
 }
 
-// One pixel per block, scaled up with smoothing off so the blocks stay square.
+// One pixel per mask step, scaled up with smoothing off, so a shard keeps a
+// hard cut edge rather than being blurred back into the background.
 function clueMask(level) {
-  const { cx, cy, rank } = clueField;
-  clueMaskCanvas.width = cx;
-  clueMaskCanvas.height = cy;
+  const { mw, mh, owner, rank } = clueField;
+  clueMaskCanvas.width = mw;
+  clueMaskCanvas.height = mh;
   const mctx = clueMaskCanvas.getContext('2d');
-  const img = mctx.createImageData(cx, cy);
+  const img = mctx.createImageData(mw, mh);
   const cut = level / CLUE_LEVELS;
-  for (let i = 0; i < cx * cy; i++) {
-    img.data[i * 4] = 255;
-    img.data[i * 4 + 1] = 255;
-    img.data[i * 4 + 2] = 255;
-    img.data[i * 4 + 3] = rank[i] < cut ? 255 : 0;
+  for (let k = 0; k < mw * mh; k++) {
+    img.data[k * 4] = 255;
+    img.data[k * 4 + 1] = 255;
+    img.data[k * 4 + 2] = 255;
+    img.data[k * 4 + 3] = rank[owner[k]] < cut ? 255 : 0;
   }
   mctx.putImageData(img, 0, 0);
   return clueMaskCanvas;
@@ -858,7 +902,7 @@ function composeClue(pattern, level) {
   const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
   clueBufCtx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
 
-  // Keep only the blocks this level has uncovered.
+  // Keep only the shards this level has uncovered.
   clueBufCtx.globalCompositeOperation = 'destination-in';
   clueBufCtx.imageSmoothingEnabled = false;
   clueBufCtx.drawImage(clueMask(level), 0, 0, w, h);
