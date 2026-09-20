@@ -211,7 +211,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b42';
+const BUILD = 'b43';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -440,7 +440,24 @@ let shrinkSince = 0;
 // Three ways to learn it, best first. The assumed share is only reached if the
 // platform reports nothing at all, and it is visible in the readout so a wrong
 // guess can be seen rather than felt.
-const ASSUMED_TOP_SHARE = 0.31;   // a 24px status bar against a 78px total
+// Measured on the tablet rather than guessed, by bracketing it. Centring by
+// proportion (b39) puts the circle at (T - 39) against a 78px total, and it read
+// as about a millimetre high. Compensating by 24.5 (b42) puts it at (T - 24.5),
+// and it read as about a millimetre low. Same distance, opposite directions, so
+// T is the midpoint of 39 and 24.5 -- and because only the equality of the two
+// readings is used, nothing has to be converted from millimetres to pixels:
+//
+//   T - 39   = -k        T = 39 - k
+//   T - 24.5 = +k        T = 24.5 + k      ->  k = 7.25,  T = 31.75
+//
+// A ~32px status bar against a ~46px navigation bar, which is a believable pair
+// and sits between the two guesses that missed it either way.
+//
+// This is calibration for one device. The platform reports nothing on this one
+// -- safe-area insets and screenY are all zero, which is why this path runs at
+// all -- so there is nothing better to be had here. On a tablet that does report
+// them, topInset never reaches this constant.
+const ASSUMED_TOP_SHARE = 0.407;  // 31.75 of 78
 let insetSource = '-';
 
 function topInset(total) {
