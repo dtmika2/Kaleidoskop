@@ -188,7 +188,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b36';
+const BUILD = 'b37';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -388,8 +388,11 @@ let cursorHidden = null;
 // it. Crossing the edge is not a moment worth marking: the dot is already
 // pinned to the rim there and the view has stopped moving, so handing back a
 // second cursor the instant the pointer leaves only draws the eye to the seam.
-// Ten percent is enough to cover the overshoot of an ordinary push at the edge.
-const CURSOR_HIDE_MARGIN = 1.1;
+// Confirmed on the tablet at 1.1 and asked to reach further, so a quarter of a
+// radius. The ceiling is 1.41, where the halo would swallow the corners of the
+// stage box and there would be nowhere inside it left showing an OS cursor at
+// all; 1.25 keeps the corners clear with room to spare.
+const CURSOR_HIDE_MARGIN = 1.25;
 
 function updateCursorVisibility(e) {
   const rect = stage.getBoundingClientRect();
