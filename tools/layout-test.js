@@ -16,8 +16,9 @@ const { install } = require('./harness.js');
 
 const app = install(fs.readFileSync(process.argv[2], 'utf8'));
 const wrap = app.els.stageWrap;
-const box = () => wrap.style.width + ' x ' + wrap.style.height
-  + ' at ' + wrap.style.left + ',' + wrap.style.top;
+// Position is left to CSS (a 50% offset with a translate), so the size is the
+// whole of what latchLayout decides and the whole of what can churn.
+const box = () => wrap.style.width + ' x ' + wrap.style.height;
 
 let fails = 0;
 function check(label, cond, detail) {
@@ -62,10 +63,15 @@ app.resize(W, H);
 app.advance(100);
 check('growing back is adopted at once', box() === settled, box());
 
-app.orient(H, W);                  // portrait
+// A flip to a narrower portrait shrinks vmin, which is the interesting case:
+// it must be taken at once rather than sitting out LAYOUT_SETTLE_MS the way a
+// bar would. (Flipping 1280x800 to 800x1280 leaves vmin alone and would prove
+// nothing.)
+app.orient(700, 1280);
 app.advance(100);
 const portrait = box();
-check('an orientation flip is adopted at once', portrait !== settled, portrait);
+check('a flip that shrinks vmin is adopted at once, not after the delay',
+  parseInt(portrait, 10) === Math.round(700 * 0.94), portrait);
 
 app.orient(W, H);
 app.advance(100);

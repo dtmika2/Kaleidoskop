@@ -1,5 +1,5 @@
-// Which cursor is showing, and where. The dot is the cursor inside the disc and
-// for a margin past its rim; the OS cursor takes over beyond that.
+// Which cursor is showing, and where, and what happens when the pointer is
+// pushed past the rim.
 //
 // This exists because the tests cannot see the page. b29 hid the OS cursor to
 // make room for a dot that was still switched off in CSS, and every suite
@@ -34,12 +34,9 @@ function check(label, cond, detail) {
   console.log('  ' + (cond ? 'ok  ' : 'FAIL') + '  ' + label + (detail ? '   ' + detail : ''));
 }
 
-// Bisect for the flip. Start by confirming the two ends are what they should be,
-// or the search below is meaningless.
-const atCentre = at(0);
-const farOut = at(RADIUS * 3);
-check('dot only at the centre of the disc', !atCentre);
-check('OS cursor well outside the disc', farOut);
+// Bisect for the flip. Confirm the two ends first, or the search means nothing.
+check('dot only at the centre of the disc', !at(0));
+check('OS cursor well outside the disc', at(RADIUS * 3));
 
 let lo = 0, hi = RADIUS * 3;
 for (let i = 0; i < 40; i++) {
@@ -63,8 +60,53 @@ check('toggles both ways along a walk in and out',
   got.every((g, i) => g === want[i]),
   walk.map((d, i) => Math.round(d) + (got[i] ? ':os' : ':dot')).join('  '));
 
+// --- pushing past the rim ----------------------------------------------------
+// Beyond the rim pan is clamped and the view stops dead, which is
+// indistinguishable from a freeze. The dot swells instead, so the stillness
+// reads as the edge of the picture rather than as a fault.
+//
+// The circle has radius 450 and the 1.6 gain puts pan at 450 + offset * 1.6, so
+// the rim is reached 281px from centre on screen and a full RIM_PUSH_FULL
+// overshoot at 350px.
+app.openReadout();
+app.advance(150);
+
+const push = () => {
+  const m = app.line('rim').match(/push\s+([\d.]+)/);
+  return m ? Number(m[1]) : null;
+};
+const dotScale = () => {
+  const m = (app.els.cursorDot.style.transform || '').match(/scale\(([\d.]+)\)/);
+  return m ? Number(m[1]) : null;
+};
+const standAt = off => { app.move(450, 450 + off); app.advance(150); };
+
+console.log('\n  offset   rim push   dot scale');
+const seen = [];
+for (const off of [0, 200, 281, 315, 350, 450]) {
+  standAt(off);
+  seen.push({ off, push: push(), scale: dotScale() });
+  console.log('    ' + String(off).padStart(4) + '      ' + String(push()).padStart(5)
+    + '       ' + String(dotScale()).padStart(5));
+}
+console.log('');
+
+const inside = seen.filter(r => r.off <= 281);
+const part = seen.find(r => r.off === 315);
+const hard = seen.find(r => r.off === 450);
+
+check('no push while the pointer is still within the disc',
+  inside.every(r => r.push === 0), inside.map(r => r.off + ':' + r.push).join(' '));
+check('partial push part way past the rim',
+  part.push > 0.2 && part.push < 0.8, String(part.push));
+check('saturates when pushed hard', hard.push === 1, String(hard.push));
+check('the dot grows with the push', hard.scale > 1.5, 'scale ' + hard.scale);
+standAt(0);
+check('and returns to normal back inside', dotScale() === 1 && push() === 0,
+  'scale ' + dotScale() + ', push ' + push());
+
 if (fails) {
   console.error('\n' + fails + ' check(s) failed');
   process.exit(1);
 }
-console.log('\ncursor OK: hidden out to ' + margin.toFixed(2) + ' radii, OS cursor beyond');
+console.log('\ncursor OK: hidden out to ' + margin.toFixed(2) + ' radii, and the rim pushes back');

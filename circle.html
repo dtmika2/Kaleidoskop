@@ -40,6 +40,14 @@
     position: fixed;
     width: 94vmin;
     height: 94vmin;
+    /* Centred as a proportion, not at a latched pixel offset. Fixed positioning
+       is relative to the viewport, and when a system bar appears at the top the
+       viewport origin moves down with it -- so a pixel offset drags the circle
+       down by the height of the bar. A proportion holds still when both bars
+       appear together, and is out by only half the difference when one does. */
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
   }
   .stage {
     position: absolute;
@@ -192,7 +200,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b38';
+const BUILD = 'b39';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -244,6 +252,7 @@ setInterval(() => {
     'handler   ' + dbg.lastHandler,
 
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves + '   buttons ' + dbg.buttons,
+    'rim       push ' + rimPush.toFixed(2),
     'clue      ' + (cluePattern ? cluePattern.image : '-')
                  + '   level ' + clueLevel + '/' + CLUE_LEVELS
                  + (cluePattern && !cluePattern.imageReady ? '   NOT LOADED' : ''),
@@ -388,8 +397,6 @@ function latchLayout(force) {
   const size = Math.round(vmin * 0.94);
   stageWrap.style.width = size + 'px';
   stageWrap.style.height = size + 'px';
-  stageWrap.style.left = Math.round((vw - size) / 2) + 'px';
-  stageWrap.style.top = Math.round((vh - size) / 2) + 'px';
   dbgEvent('layout ' + size + 'px');
 }
 
@@ -441,6 +448,18 @@ const cursorDot = document.getElementById('cursorDot');
 function updateCursorDotPosition() {
   cursorDot.style.left = (pan.x / SRC_SIZE) * 100 + '%';
   cursorDot.style.top = (pan.y / SRC_SIZE) * 100 + '%';
+  applyDotPush();
+}
+
+// Scale rather than size, so it grows about its own centre and stays exactly on
+// the rim; the halo widens with it so the cue carries at arm's length.
+function applyDotPush() {
+  if (rimPush === dotPushApplied) return;
+  dotPushApplied = rimPush;
+  const hex = cursorColor || DEFAULT_CURSOR_COLOR;
+  cursorDot.style.transform = 'scale(' + (1 + rimPush * 0.85).toFixed(3) + ')';
+  cursorDot.style.boxShadow = '0 0 0 2px rgba(0,0,0,0.55), 0 0 '
+    + Math.round(10 + rimPush * 22) + 'px ' + hex;
 }
 
 // The dot marks pan, which is clamped to the disc; the OS cursor marks where
@@ -535,11 +554,22 @@ function applyMapping(base) {
 // pan to the square (as before) let the cursor wander into the box's
 // corners, visibly outside the ring. All 4 pattern targets sit within this
 // radius, so they stay reachable.
+// How far past the rim the pointer is pushing, 0..1.
+//
+// Beyond the rim pan is clamped, so the view stops dead -- and stopping dead is
+// indistinguishable from the app having frozen, which is what makes someone push
+// harder, toward the edge of the screen, which is what summons Android's system
+// bars. The dot swells and brightens instead, so the stillness reads as the edge
+// of the picture rather than as a fault, and there is no reason to keep going.
+const RIM_PUSH_FULL = 110;    // source units of overshoot for the full effect
+let rimPush = 0;
+
 function clampPanToCircle() {
   const cx = SRC_SIZE / 2, cy = SRC_SIZE / 2;
   const dx = pan.x - cx, dy = pan.y - cy;
   const dist = Math.hypot(dx, dy);
   const maxR = SRC_SIZE / 2;
+  rimPush = Math.min(1, Math.max(0, (dist - maxR) / RIM_PUSH_FULL));
   if (dist > maxR) {
     const scale = maxR / dist;
     pan.x = cx + dx * scale;
@@ -1052,11 +1082,14 @@ let activePatternId = null; // which pattern's letters are currently rendered in
 
 const DEFAULT_CURSOR_COLOR = '#ff8a3d';
 let cursorColor = null; // tracks the last color applied, so we only touch style.cursor on change
+let dotPushApplied = -1;      // so the shadow is only rewritten when it changes
+
 function setCursorDotColor(hex) {
   if (hex === cursorColor) return;
   cursorColor = hex;
   cursorDot.style.background = hex;
-  cursorDot.style.boxShadow = `0 0 0 2px rgba(0,0,0,0.55), 0 0 10px ${hex}`;
+  dotPushApplied = -1;        // the halo carries the colour, so it must be redrawn
+  applyDotPush();
   if (cursorHidden !== true) applyCssCursor(hex); // never un-hide it mid-circle
 }
 
