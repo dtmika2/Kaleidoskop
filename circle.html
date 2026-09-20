@@ -211,7 +211,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b40';
+const BUILD = 'b41';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -243,6 +243,25 @@ function safeAreaInsets() {
   } catch (err) {
     return '-';
   }
+}
+
+// Everything that could describe where the page has been put, in one line.
+// viewport-fit=cover did not stop the jump, and the transient is far too quick
+// to read live, so each change is written to the log to be read afterwards.
+//
+// The four numbers that matter: whether innerHeight moves at all (if it does,
+// cover is not being honoured and the page is still being inset); whether the
+// safe-area insets are reported (if they are, the split between top and bottom
+// is known and the position can be corrected exactly); whether screenY moves
+// (which gives the top inset on its own); and what the visual viewport says,
+// since it can move independently of the layout one.
+function viewportLine() {
+  const vv = window.visualViewport;
+  return window.innerWidth + 'x' + window.innerHeight
+    + '  sa ' + safeAreaInsets()
+    + '  scrY ' + (window.screenY !== undefined ? window.screenY : '?')
+    + (vv ? '  vv ' + Math.round(vv.width) + 'x' + Math.round(vv.height)
+            + '@' + Math.round(vv.offsetTop) : '  vv -');
 }
 
 function dbgEvent(text) {
@@ -278,9 +297,9 @@ setInterval(() => {
     'handler   ' + dbg.lastHandler,
 
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves + '   buttons ' + dbg.buttons,
-    'viewport  ' + window.innerWidth + 'x' + window.innerHeight
-                 + '   latched ' + (latched ? latched.vmin : '-'),
-    'insets    ' + safeAreaInsets(),
+    'viewport  ' + viewportLine(),
+    'latched   ' + (latched ? latched.vmin : '-')
+                 + '   wrap ' + (stageWrap.style.width || '-'),
     'rim       push ' + rimPush.toFixed(2),
     'clue      ' + (cluePattern ? cluePattern.image : '-')
                  + '   level ' + clueLevel + '/' + CLUE_LEVELS
@@ -447,8 +466,20 @@ function onViewportChange(force) {
   resizeCanvas();
   resizeClue();
 }
-window.addEventListener('resize', () => onViewportChange(false));
-window.addEventListener('orientationchange', () => onViewportChange(true));
+window.addEventListener('resize', () => {
+  dbgEvent('vp ' + viewportLine());
+  onViewportChange(false);
+});
+window.addEventListener('orientationchange', () => {
+  dbgEvent('orient ' + viewportLine());
+  onViewportChange(true);
+});
+// The visual viewport can move without a window resize firing at all, which
+// would look exactly like this jump and leave no trace in the log otherwise.
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => dbgEvent('vv-resize ' + viewportLine()));
+  window.visualViewport.addEventListener('scroll', () => dbgEvent('vv-scroll ' + viewportLine()));
+}
 // A shrink that outlasts LAYOUT_SETTLE_MS fires no further resize event of its
 // own, so it needs looking at again rather than waiting to be told.
 setInterval(() => { if (shrinkSince) onViewportChange(false); }, 500);
