@@ -188,7 +188,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b32';
+const BUILD = 'b33';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -739,7 +739,25 @@ refreshTargets(); // identity until the first idle reset, but never undefined
 const CLUE_BOX = 0.52;        // share of the disc the square art box spans
 const CLUE_DITHER_CELL = 6;   // CSS px per dither cell -- the knob for how coarse it reads
 const CLUE_LEVELS = 16;       // a 4x4 Bayer matrix has exactly 16 thresholds
-const CLUE_GLOW_BLUR = 26;    // matches the letters' outer text-shadow
+// The letters carry four shadows and only one is the coloured glow; the other
+// three are black, and they are what lifts the word off a moving kaleidoscope.
+// b32 baked the glow alone, which on thin line art comes to almost nothing.
+//
+// This is that stack, retuned. The letters' numbers assume thick glyphs: spread
+// over a 2px stroke the same blur thins the shadow out until it barely reads, so
+// the two inner shadows are tighter and each is drawn more than once, which
+// accumulates alpha into an outline that actually hugs the line. Drawn back to
+// front, the order CSS paints a text-shadow list in.
+//
+//   letters: 0 0 26px <glow>, 0 0 12px #000, 0 4px 8px #000e6, 0 10px 22px #000d9
+const CLUE_SHADOWS = [
+  { blur: 22, y: 10, color: 'rgba(0,0,0,0.85)', times: 1 }, // the soft drop
+  { blur: 9,  y: 4,  color: 'rgba(0,0,0,0.95)', times: 2 },
+  { blur: 5,  y: 0,  color: 'rgba(0,0,0,1)',    times: 3 }, // the outline
+  { blur: 26, y: 0,  glow: true,                 times: 2 }, // the pattern colour
+];
+// Room for the largest of them, 22px of blur thrown 10px down.
+const CLUE_PAD = 34;
 const MAX_CLUE_PX = 700;      // same bargain as MAX_CANVAS_PX: sharpness nobody sees
 
 // Ordered dither rather than random: the threshold a pixel has to beat depends
@@ -786,7 +804,7 @@ function composeClue(pattern, level) {
 
   // Fit inside the box, leaving room for the glow so it is not clipped.
   const img = pattern.img;
-  const pad = CLUE_GLOW_BLUR * clueScale;
+  const pad = CLUE_PAD * clueScale;
   const scale = Math.min((w - pad * 2) / img.naturalWidth, (h - pad * 2) / img.naturalHeight);
   if (!(scale > 0)) return; // a canvas too small to hold the glow, or a zero-sized image
   const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
@@ -803,15 +821,22 @@ function composeClue(pattern, level) {
   clueBufCtx.fillRect(0, 0, w, h);
   clueBufCtx.globalCompositeOperation = 'source-over';
 
-  // The glow is baked in rather than applied as a CSS filter on the element: a
-  // filter re-rasterises on every frame, and the kaleidoscope behind this
-  // repaints continuously. Drawn twice through the shadow and once without, the
-  // way the letters stack several text-shadows.
-  clueCtx.shadowColor = pattern.glow;
-  clueCtx.shadowBlur = pad;
-  clueCtx.drawImage(clueBuf, 0, 0);
-  clueCtx.drawImage(clueBuf, 0, 0);
+  // Baked in rather than applied as a CSS filter on the element: a filter
+  // re-rasterises on every frame, and the kaleidoscope behind this repaints
+  // continuously.
+  //
+  // Each pass paints the art as well as its shadow, which is harmless -- the
+  // copies land exactly on top of each other and the last pass, drawn with no
+  // shadow at all, is what the eye ends up seeing.
+  for (const sh of CLUE_SHADOWS) {
+    clueCtx.shadowColor = sh.glow ? pattern.glow : sh.color;
+    clueCtx.shadowBlur = sh.blur * clueScale;
+    clueCtx.shadowOffsetY = sh.y * clueScale;
+    for (let i = 0; i < sh.times; i++) clueCtx.drawImage(clueBuf, 0, 0);
+  }
+  clueCtx.shadowColor = 'transparent';
   clueCtx.shadowBlur = 0;
+  clueCtx.shadowOffsetY = 0;
   clueCtx.drawImage(clueBuf, 0, 0);
 }
 
