@@ -57,7 +57,18 @@ function install(code) {
       // 900x900 and at the origin, so stage coordinates and client coordinates
       // are the same number and a test can aim at a source position directly.
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 900, height: 900 }),
-      getContext: () => new Proxy({}, { get: () => () => ({}) }),
+      // Every 2D context member is a no-op function, except the few whose return
+      // value the app actually reads. createImageData is one: the clue mask
+      // writes into its data array, and a stub that hands back a bare object
+      // throws there -- which is the harness being wrong, not the app.
+      getContext: () => new Proxy({}, {
+        get: (t, k) => {
+          if (k === "createImageData") {
+            return (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) });
+          }
+          return () => ({});
+        },
+      }),
       addEventListener(type, fn) { (listeners.el[id] ||= {})[type] = fn; },
       requestPointerLock: () => Promise.resolve(),
       requestFullscreen: () => Promise.resolve(),

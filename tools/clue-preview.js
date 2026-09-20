@@ -26,7 +26,31 @@ const { decode, encode } = mod.exports;
 
 const W = 420, H = 420, SCALE = 1;
 const PAD = 34, CELL = 6, LEVELS = 16;
-const BAYER = [0,8,2,10, 12,4,14,6, 3,11,1,9, 15,7,13,5];
+const LATTICE = 5, SPLATTER = 0.38;
+
+// Same field as circle.html: value noise over a coarse lattice, jittered, then
+// rank-normalised so level L uncovers exactly L/16 of the blocks.
+function buildField(cx, cy) {
+  const n = cx * cy;
+  const lx = Math.ceil(cx / LATTICE) + 2, ly = Math.ceil(cy / LATTICE) + 2;
+  const lat = new Float32Array(lx * ly);
+  for (let i = 0; i < lat.length; i++) lat[i] = Math.random();
+  const val = new Float32Array(n);
+  for (let y = 0; y < cy; y++) for (let x = 0; x < cx; x++) {
+    const fx = x / LATTICE, fy = y / LATTICE;
+    const x0 = Math.floor(fx), y0 = Math.floor(fy);
+    const tx = fx - x0, ty = fy - y0;
+    const sx = tx*tx*(3-2*tx), sy = ty*ty*(3-2*ty);
+    const a = lat[y0*lx+x0], b = lat[y0*lx+x0+1], c = lat[(y0+1)*lx+x0], d = lat[(y0+1)*lx+x0+1];
+    const smooth = a + (b-a)*sx + (c-a)*sy + (a-b-c+d)*sx*sy;
+    val[y*cx+x] = smooth * (1 - SPLATTER) + Math.random() * SPLATTER;
+  }
+  const rank = new Float32Array(n);
+  const idx = [...val.keys()];
+  idx.sort((i, j) => val[i] - val[j]);
+  idx.forEach((v, r) => { rank[v] = r / n; });
+  return rank;
+}
 const SHADOWS = [
   { blur: 22, y: 10, c: [0,0,0], a: 0.85, times: 1 },
   { blur: 9,  y: 4,  c: [0,0,0], a: 0.95, times: 2 },
@@ -36,6 +60,9 @@ const SHADOWS = [
 const TINT = [255, 138, 61];
 
 // --- art fitted into the box, dithered, as an alpha field --------------------
+const CELLS_X = Math.ceil(W / CELL), CELLS_Y = Math.ceil(H / CELL);
+const rank = buildField(CELLS_X, CELLS_Y);
+
 function artAlpha(file, level) {
   const img = decode(path.join(ROOT, file));
   const s = Math.min((W - PAD*2) / img.w, (H - PAD*2) / img.h);
@@ -45,8 +72,8 @@ function artAlpha(file, level) {
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const sx = Math.round((x - ox) / s), sy = Math.round((y - oy) / s);
     if (sx < 0 || sy < 0 || sx >= img.w || sy >= img.h) continue;
-    const cellX = Math.floor(x / CELL) % 4, cellY = Math.floor(y / CELL) % 4;
-    if (BAYER[cellY * 4 + cellX] >= level) continue;          // dither
+    const bx = Math.floor(x / CELL), by = Math.floor(y / CELL);
+    if (rank[by * CELLS_X + bx] >= level / LEVELS) continue;   // not yet uncovered
     a[y * W + x] = img.pixels[(sy * img.w + sx) * 4 + 3] / 255;
   }
   return a;

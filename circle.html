@@ -188,7 +188,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b33';
+const BUILD = 'b34';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -760,44 +760,92 @@ const CLUE_SHADOWS = [
 const CLUE_PAD = 34;
 const MAX_CLUE_PX = 700;      // same bargain as MAX_CANVAS_PX: sharpness nobody sees
 
-// Ordered dither rather than random: the threshold a pixel has to beat depends
-// only on its position in a repeating 4x4 grid, so every level is a fixed
-// pattern that can be baked once into a tile and reused for all four images.
-const BAYER4 = [
-   0,  8,  2, 10,
-  12,  4, 14,  6,
-   3, 11,  1,  9,
-  15,  7, 13,  5,
-];
+// Each square block gets a number saying how late it arrives, and a level
+// uncovers every block numbered below it. An ordered 4x4 matrix (b32, b33) made
+// those numbers a repeating lattice, which reveals as an even crosshatch --
+// tidy, and reading as a screen door rather than as anything appearing.
+//
+// The numbers now come from smooth value noise, so neighbouring blocks arrive at
+// similar times and the picture surfaces in drifting patches. CLUE_SPLATTER
+// mixes independent randomness back in, which ragged the edges of those patches
+// so they spatter rather than creep.
+//
+// Then the field is rank-normalised: the blocks are sorted and renumbered by
+// their position in that order, so level L uncovers exactly L/16 of them however
+// the noise happened to fall. Clumped in appearance, even in pace.
+const CLUE_LATTICE = 5;       // blocks per noise lattice step -- bigger, softer clouds
+const CLUE_SPLATTER = 0.38;   // 0 = smooth clouds, 1 = pure static
+let clueField = null;         // { cell, cx, cy, order } in canvas pixels
 
 const clueCanvas = document.getElementById('clue');
 const clueCtx = clueCanvas.getContext('2d');
 const clueBuf = document.createElement('canvas');   // art is composed here, then glowed onto the visible one
 const clueBufCtx = clueBuf.getContext('2d');
-const ditherTiles = [];       // by level; cleared whenever the scale changes
+const clueMaskCanvas = document.createElement('canvas'); // one pixel per block
 let clueScale = 1;            // canvas pixels per CSS pixel
 let cluePattern = null;
 let clueLevel = 0;
 let clueDrawn = '';           // what is actually on the canvas, so a redraw can be skipped
 
-function ditherTile(level) {
-  if (ditherTiles[level]) return ditherTiles[level];
-  const cell = Math.max(1, Math.round(CLUE_DITHER_CELL * clueScale));
-  const tile = document.createElement('canvas');
-  tile.width = tile.height = cell * 4;
-  const tctx = tile.getContext('2d');
-  tctx.fillStyle = '#fff';
-  for (let i = 0; i < 16; i++) {
-    if (BAYER4[i] < level) tctx.fillRect((i % 4) * cell, Math.floor(i / 4) * cell, cell, cell);
+function buildClueField() {
+  const cell = Math.max(2, Math.round(CLUE_DITHER_CELL * clueScale));
+  const cx = Math.ceil(clueCanvas.width / cell), cy = Math.ceil(clueCanvas.height / cell);
+  const n = cx * cy;
+  if (!(n > 0)) { clueField = null; return; }
+
+  // A coarse random lattice, read back with smoothstep interpolation: cheap
+  // value noise, and all the clumping this needs.
+  const lx = Math.ceil(cx / CLUE_LATTICE) + 2, ly = Math.ceil(cy / CLUE_LATTICE) + 2;
+  const lat = new Float32Array(lx * ly);
+  for (let i = 0; i < lat.length; i++) lat[i] = Math.random();
+
+  const val = new Float32Array(n);
+  for (let y = 0; y < cy; y++) {
+    for (let x = 0; x < cx; x++) {
+      const fx = x / CLUE_LATTICE, fy = y / CLUE_LATTICE;
+      const x0 = Math.floor(fx), y0 = Math.floor(fy);
+      const tx = fx - x0, ty = fy - y0;
+      const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+      const a = lat[y0 * lx + x0], b = lat[y0 * lx + x0 + 1];
+      const c = lat[(y0 + 1) * lx + x0], d = lat[(y0 + 1) * lx + x0 + 1];
+      const smooth = a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
+      val[y * cx + x] = smooth * (1 - CLUE_SPLATTER) + Math.random() * CLUE_SPLATTER;
+    }
   }
-  ditherTiles[level] = tile;
-  return tile;
+
+  // Rank-normalise, so the pace of the reveal does not depend on how the noise
+  // happened to fall.
+  const rank = new Float32Array(n);
+  const idx = new Array(n);
+  for (let i = 0; i < n; i++) idx[i] = i;
+  idx.sort((i, j) => val[i] - val[j]);
+  for (let r = 0; r < n; r++) rank[idx[r]] = r / n;
+
+  clueField = { cell, cx, cy, rank };
+}
+
+// One pixel per block, scaled up with smoothing off so the blocks stay square.
+function clueMask(level) {
+  const { cx, cy, rank } = clueField;
+  clueMaskCanvas.width = cx;
+  clueMaskCanvas.height = cy;
+  const mctx = clueMaskCanvas.getContext('2d');
+  const img = mctx.createImageData(cx, cy);
+  const cut = level / CLUE_LEVELS;
+  for (let i = 0; i < cx * cy; i++) {
+    img.data[i * 4] = 255;
+    img.data[i * 4 + 1] = 255;
+    img.data[i * 4 + 2] = 255;
+    img.data[i * 4 + 3] = rank[i] < cut ? 255 : 0;
+  }
+  mctx.putImageData(img, 0, 0);
+  return clueMaskCanvas;
 }
 
 function composeClue(pattern, level) {
   const w = clueCanvas.width, h = clueCanvas.height;
   clueCtx.clearRect(0, 0, w, h);
-  if (!pattern || !pattern.imageReady || level <= 0) return;
+  if (!pattern || !pattern.imageReady || level <= 0 || !clueField) return;
 
   clueBuf.width = w;          // assigning the size also clears it
   clueBuf.height = h;
@@ -810,10 +858,10 @@ function composeClue(pattern, level) {
   const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
   clueBufCtx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
 
-  // Keep only what this level of the dither lets through.
+  // Keep only the blocks this level has uncovered.
   clueBufCtx.globalCompositeOperation = 'destination-in';
-  clueBufCtx.fillStyle = clueBufCtx.createPattern(ditherTile(level), 'repeat');
-  clueBufCtx.fillRect(0, 0, w, h);
+  clueBufCtx.imageSmoothingEnabled = false;
+  clueBufCtx.drawImage(clueMask(level), 0, 0, w, h);
 
   // Tint whatever survived. The art is white, so this is the whole colouring.
   clueBufCtx.globalCompositeOperation = 'source-in';
@@ -858,7 +906,7 @@ function resizeClue() {
   if (size === clueCanvas.width) return;
   clueCanvas.width = clueCanvas.height = size;
   clueScale = size / cssSize;
-  ditherTiles.length = 0;     // cell size is in canvas pixels, so the tiles are stale
+  buildClueField();           // block size is in canvas pixels, so the field is stale
   clueDrawn = '';
   composeClue(cluePattern, clueLevel);
 }
@@ -902,7 +950,10 @@ function setActivePattern(pattern) {
   if (activePatternId === (pattern ? pattern.id : null)) return;
   activePatternId = pattern ? pattern.id : null;
   wordOverlay.innerHTML = '';
-  // The picture leaves with the letters; updateWordReveal brings it back in.
+  // The picture leaves with the letters; updateWordReveal brings it back in. A
+  // fresh field per approach, so the same clue does not spatter the same way
+  // twice.
+  buildClueField();
   updateClue(pattern, 0);
   if (!pattern) return;
   Array.from(pattern.word).forEach((ch, idx) => {
