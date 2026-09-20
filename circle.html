@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover says the page takes responsibility for the system UI, so
+     the viewport is laid out across the whole screen and stays that size when a
+     bar appears over it, instead of being inset and shrinking. The bars then
+     overlay a page that has not moved, which is the whole of the problem. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Kaleidoscope Circle</title>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#12141a">
@@ -10,6 +14,13 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <style>
   :root {
+    /* Read back in the readout. With viewport-fit=cover these report how far the
+       system UI intrudes on each edge, which is the measurement that was being
+       taken with a ruler against the screen. */
+    --sa-top: env(safe-area-inset-top, 0px);
+    --sa-right: env(safe-area-inset-right, 0px);
+    --sa-bottom: env(safe-area-inset-bottom, 0px);
+    --sa-left: env(safe-area-inset-left, 0px);
     --bg: #12141a;
     --accent: #ff8a3d;
   }
@@ -200,7 +211,7 @@
 /* ---------- 0. Build stamp and pointer diagnostics ---------- */
 // Bump BUILD on every change that gets pushed. It is shown in the corner so a
 // cached page can be told apart from a fresh one from inside the installed app.
-const BUILD = 'b39';
+const BUILD = 'b40';
 document.getElementById('buildBadge').textContent = BUILD;
 
 // Counters, not logs: the question is which code path handles movement while
@@ -218,6 +229,21 @@ const dbg = {
   events: [],
 };
 
+
+// Top, right, bottom, left, as the browser reports them. Guarded because a
+// stripped-down getComputedStyle -- the test harness has one -- has no
+// getPropertyValue, and the readout is not worth throwing over.
+function safeAreaInsets() {
+  try {
+    const cs = getComputedStyle(document.documentElement);
+    if (!cs || typeof cs.getPropertyValue !== 'function') return '-';
+    return ['top', 'right', 'bottom', 'left']
+      .map(side => (cs.getPropertyValue('--sa-' + side) || '?').trim())
+      .join('  ');
+  } catch (err) {
+    return '-';
+  }
+}
 
 function dbgEvent(text) {
   dbg.events.unshift(Math.round(performance.now() / 100) / 10 + 's ' + text);
@@ -252,6 +278,9 @@ setInterval(() => {
     'handler   ' + dbg.lastHandler,
 
     'moves     hover ' + dbg.hoverMoves + '   pressed ' + dbg.dragMoves + '   buttons ' + dbg.buttons,
+    'viewport  ' + window.innerWidth + 'x' + window.innerHeight
+                 + '   latched ' + (latched ? latched.vmin : '-'),
+    'insets    ' + safeAreaInsets(),
     'rim       push ' + rimPush.toFixed(2),
     'clue      ' + (cluePattern ? cluePattern.image : '-')
                  + '   level ' + clueLevel + '/' + CLUE_LEVELS
